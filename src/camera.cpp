@@ -35,7 +35,7 @@ void camera_update(Camera* cam, const bool* keys, float dx, float dy, float dt) 
     // keys: 0=W, 1=A, 2=S, 3=D, 4=Space, 5=LCtrl, 6=LShift
     if (cam->right_mouse_held) {
         cam->yaw   += dx * cam->look_sensitivity;
-        cam->pitch -= dy * cam->look_sensitivity;
+        cam->pitch += dy * cam->look_sensitivity;
         float limit = 3.14159265358979f * 0.5f - 0.01f;
         if (cam->pitch >  limit) cam->pitch =  limit;
         if (cam->pitch < -limit) cam->pitch = -limit;
@@ -60,12 +60,12 @@ void camera_update(Camera* cam, const bool* keys, float dx, float dy, float dt) 
         cam->position[1] -= forward[1] * speed;
         cam->position[2] -= forward[2] * speed;
     }
-    if (keys[3]) { // D
+    if (keys[1]) { // A
         cam->position[0] += right[0] * speed;
         cam->position[1] += right[1] * speed;
         cam->position[2] += right[2] * speed;
     }
-    if (keys[1]) { // A
+    if (keys[3]) { // D
         cam->position[0] -= right[0] * speed;
         cam->position[1] -= right[1] * speed;
         cam->position[2] -= right[2] * speed;
