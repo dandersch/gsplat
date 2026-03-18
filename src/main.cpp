@@ -1,0 +1,208 @@
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_main.h>
+#include <cstdio>
+#include <cstring>
+
+#include "imgui.h"
+#include "imgui_impl_sdl3.h"
+#include "imgui_impl_sdlgpu3.h"
+
+#include "camera.h"
+#include "gaussian.h"
+#include "renderer.h"
+
+int main(int argc, char* argv[]) {
+    const char* ply_path = NULL;
+    if (argc > 1) ply_path = argv[1];
+
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
+        fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
+        return 1;
+    }
+
+    SDL_GPUDevice* device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, false, NULL);
+    if (!device) {
+        fprintf(stderr, "SDL_CreateGPUDevice failed: %s\n", SDL_GetError());
+        return 1;
+    }
+
+    SDL_Window* window = SDL_CreateWindow("gsplat", 1280, 720, SDL_WINDOW_RESIZABLE);
+    if (!window) {
+        fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
+        return 1;
+    }
+
+    if (!SDL_ClaimWindowForGPUDevice(device, window)) {
+        fprintf(stderr, "SDL_ClaimWindowForGPUDevice failed: %s\n", SDL_GetError());
+        return 1;
+    }
+
+    // ImGui init
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGui_ImplSDL3_InitForOther(window);
+
+    SDL_GPUTextureFormat swapchain_format = SDL_GetGPUSwapchainTextureFormat(device, window);
+    ImGui_ImplSDLGPU3_InitInfo imgui_init = {};
+    imgui_init.Device = device;
+    imgui_init.ColorTargetFormat = swapchain_format;
+    ImGui_ImplSDLGPU3_Init(&imgui_init);
+
+    // Renderer
+    Renderer renderer = {};
+    if (!renderer_init(&renderer, device, window)) {
+        fprintf(stderr, "Renderer init failed\n");
+        return 1;
+    }
+
+    // Scene
+    GaussianScene scene = {};
+    bool scene_loaded = false;
+    if (ply_path) {
+        scene_loaded = load_ply(ply_path, &scene);
+        if (scene_loaded) {
+            renderer_upload_gaussians(&renderer, &scene);
+        }
+    }
+
+    // Camera
+    Camera cam;
+    camera_init(&cam);
+
+    bool keys[7] = {}; // W A S D Space LCtrl LShift
+    uint64_t last_time = SDL_GetPerformanceCounter();
+    uint64_t freq = SDL_GetPerformanceFrequency();
+    bool running = true;
+    int frame_num = 0;
+
+    while (running) {
+        uint64_t now = SDL_GetPerformanceCounter();
+        float dt = (float)(now - last_time) / (float)freq;
+        last_time = now;
+
+        SDL_Event ev;
+        float mouse_dx = 0, mouse_dy = 0;
+        while (SDL_PollEvent(&ev)) {
+            ImGui_ImplSDL3_ProcessEvent(&ev);
+
+            switch (ev.type) {
+            case SDL_EVENT_QUIT:
+                running = false;
+                break;
+            case SDL_EVENT_KEY_DOWN:
+            case SDL_EVENT_KEY_UP: {
+                bool down = (ev.type == SDL_EVENT_KEY_DOWN);
+                switch (ev.key.scancode) {
+                    case SDL_SCANCODE_W: keys[0] = down; break;
+                    case SDL_SCANCODE_A: keys[1] = down; break;
+                    case SDL_SCANCODE_S: keys[2] = down; break;
+                    case SDL_SCANCODE_D: keys[3] = down; break;
+                    case SDL_SCANCODE_SPACE: keys[4] = down; break;
+                    case SDL_SCANCODE_LCTRL: keys[5] = down; break;
+                    case SDL_SCANCODE_LSHIFT: keys[6] = down; break;
+                    case SDL_SCANCODE_ESCAPE: if (down) running = false; break;
+                    default: break;
+                }
+                break;
+            }
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
+                if (ev.button.button == SDL_BUTTON_RIGHT) {
+                    cam.right_mouse_held = true;
+                    SDL_SetWindowRelativeMouseMode(window, true);
+                }
+                break;
+            case SDL_EVENT_MOUSE_BUTTON_UP:
+                if (ev.button.button == SDL_BUTTON_RIGHT) {
+                    cam.right_mouse_held = false;
+                    SDL_SetWindowRelativeMouseMode(window, false);
+                }
+                break;
+            case SDL_EVENT_MOUSE_MOTION:
+                if (cam.right_mouse_held && !ImGui::GetIO().WantCaptureMouse) {
+                    mouse_dx += ev.motion.xrel;
+                    mouse_dy += ev.motion.yrel;
+                }
+                break;
+            case SDL_EVENT_MOUSE_WHEEL:
+                if (!ImGui::GetIO().WantCaptureMouse) {
+                    cam.move_speed *= (ev.wheel.y > 0) ? 1.2f : (1.0f / 1.2f);
+                    if (cam.move_speed < 0.1f) cam.move_speed = 0.1f;
+                    if (cam.move_speed > 100.0f) cam.move_speed = 100.0f;
+                }
+                break;
+            }
+        }
+
+        // Update camera (skip if ImGui wants keyboard)
+        if (!ImGui::GetIO().WantCaptureKeyboard) {
+            camera_update(&cam, keys, mouse_dx, mouse_dy, dt);
+        } else {
+            camera_update(&cam, keys, mouse_dx, mouse_dy, 0); // still update look but not movement
+        }
+
+        // Get window size
+        int win_w, win_h;
+        SDL_GetWindowSize(window, &win_w, &win_h);
+        float aspect = (float)win_w / (float)win_h;
+
+        // Build camera uniforms
+        CameraUniforms cam_uniforms = {};
+        camera_get_view_matrix(&cam, cam_uniforms.view);
+        camera_get_proj_matrix(&cam, aspect, cam_uniforms.proj);
+        cam_uniforms.viewport[0] = (float)win_w;
+        cam_uniforms.viewport[1] = (float)win_h;
+
+        // Cull + sort
+        if (scene_loaded) {
+            cull_gaussians(&scene, cam_uniforms.view, cam_uniforms.proj);
+
+            if (scene.visible_count > 0) {
+                SortContext sort_ctx = {};
+                sort_ctx.depths = scene.visible_depths;
+                sort_ctx.input_indices = scene.visible_indices;
+                sort_ctx.count = scene.visible_count;
+                sort_ctx.sorted_indices = scene.sorted_indices;
+                sort_ctx.scratch_indices = scene.scratch_indices;
+                sort_ctx.scratch_keys = scene.scratch_keys;
+                sort_ctx.scratch_keys2 = scene.scratch_keys2;
+                sort_gaussians(&sort_ctx);
+            }
+        }
+
+        // ImGui frame
+        ImGui_ImplSDLGPU3_NewFrame();
+        ImGui_ImplSDL3_NewFrame();
+        ImGui::NewFrame();
+
+        ImGui::Begin("Info");
+        ImGui::Text("FPS: %.1f", dt > 0 ? 1.0f / dt : 0.0f);
+        if (scene_loaded) {
+            ImGui::Text("Visible: %u / %u", scene.visible_count, scene.gaussian_count);
+        }
+        ImGui::Text("Camera: %.1f, %.1f, %.1f", cam.position[0], cam.position[1], cam.position[2]);
+        ImGui::Text("Speed: %.1f", cam.move_speed);
+        ImGui::End();
+
+        ImGui::Render();
+
+        // Render
+        renderer_draw_frame(&renderer, &scene, &cam_uniforms);
+        frame_num++;
+    }
+
+    SDL_WaitForGPUIdle(device);
+
+    if (scene_loaded) free_scene(&scene);
+    renderer_destroy(&renderer);
+
+    ImGui_ImplSDLGPU3_Shutdown();
+    ImGui_ImplSDL3_Shutdown();
+    ImGui::DestroyContext();
+
+    SDL_ReleaseWindowFromGPUDevice(device, window);
+    SDL_DestroyWindow(window);
+    SDL_DestroyGPUDevice(device);
+    SDL_Quit();
+
+    return 0;
+}
