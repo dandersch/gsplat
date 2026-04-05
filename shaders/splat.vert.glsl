@@ -39,18 +39,22 @@ void main() {
     vec3 color    = gaussians.data[idx * 4u + 3u].xyz;
 
     // 3. Build rotation matrix from quaternion
+    // rot = (w, x, y, z) stored as rot.x=w, rot.y=x, rot.z=y, rot.w=z
+    // GLSL mat3 constructor takes COLUMNS, so we provide column0, column1, column2
+    float qw = rot.x, qx = rot.y, qy = rot.z, qz = rot.w;
     mat3 R = mat3(
-        1.0 - 2.0*(rot.z*rot.z + rot.w*rot.w),
-        2.0*(rot.y*rot.z + rot.x*rot.w),
-        2.0*(rot.y*rot.w - rot.x*rot.z),
-
-        2.0*(rot.y*rot.z - rot.x*rot.w),
-        1.0 - 2.0*(rot.y*rot.y + rot.w*rot.w),
-        2.0*(rot.z*rot.w + rot.x*rot.y),
-
-        2.0*(rot.y*rot.w + rot.x*rot.z),
-        2.0*(rot.z*rot.w - rot.x*rot.y),
-        1.0 - 2.0*(rot.y*rot.y + rot.z*rot.z)
+        // Column 0
+        1.0 - 2.0*(qy*qy + qz*qz),
+        2.0*(qx*qy + qw*qz),
+        2.0*(qx*qz - qw*qy),
+        // Column 1
+        2.0*(qx*qy - qw*qz),
+        1.0 - 2.0*(qx*qx + qz*qz),
+        2.0*(qy*qz + qw*qx),
+        // Column 2
+        2.0*(qx*qz + qw*qy),
+        2.0*(qy*qz - qw*qx),
+        1.0 - 2.0*(qx*qx + qy*qy)
     );
 
     // 4. Build 3D covariance: Σ = R·S·Sᵀ·Rᵀ = M·Mᵀ where M = R·S
@@ -71,11 +75,13 @@ void main() {
     float fx = proj[0][0] * viewport.x * 0.5;
     float fy = abs(proj[1][1]) * viewport.y * 0.5;
 
-    // 7. Jacobian of perspective projection at t
+    // 7. Jacobian of the screen-space projection at t
+    // px = fx * tx / tz + cx
+    // py = cy - fy * ty / tz   (Y-flip for Vulkan screen coords)
     float J00 = fx / t.z;
-    float J11 = fy / t.z;
+    float J11 = -fy / t.z;
     float J02 = -fx * t.x / (t.z * t.z);
-    float J12 = -fy * t.y / (t.z * t.z);
+    float J12 = fy * t.y / (t.z * t.z);
 
     // 8. View rotation (upper-left 3x3 of view matrix)
     mat3 W = mat3(view);
@@ -87,6 +93,8 @@ void main() {
     // Then apply J (2x3 matrix) to get 2x2 covariance
     // J = | J00   0   J02 |
     //     |  0   J11  J12 |
+    // cov2d = J * WcovW * J^T
+    // WcovW is symmetric so [i][j] == [j][i]
     float a = J00*J00*WcovW[0][0] + 2.0*J00*J02*WcovW[0][2] + J02*J02*WcovW[2][2];
     float b = J00*J11*WcovW[0][1] + J00*J12*WcovW[0][2] + J02*J11*WcovW[1][2] + J02*J12*WcovW[2][2];
     float c = J11*J11*WcovW[1][1] + 2.0*J11*J12*WcovW[1][2] + J12*J12*WcovW[2][2];
