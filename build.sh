@@ -17,6 +17,7 @@ SRCS=(
     src/gaussian.cpp
     src/renderer.cpp
     src/camera.cpp
+    src/refview.cpp
     "$IMGUI_DIR/imgui.cpp"
     "$IMGUI_DIR/imgui_draw.cpp"
     "$IMGUI_DIR/imgui_tables.cpp"

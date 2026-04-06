@@ -10,10 +10,18 @@
 #include "camera.h"
 #include "gaussian.h"
 #include "renderer.h"
+#include "refview.h"
 
 int main(int argc, char* argv[]) {
     const char* ply_path = NULL;
-    if (argc > 1) ply_path = argv[1];
+    const char* colmap_dir = NULL;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--colmap") == 0 && i + 1 < argc) {
+            colmap_dir = argv[++i];
+        } else if (!ply_path) {
+            ply_path = argv[i];
+        }
+    }
 
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
@@ -63,6 +71,14 @@ int main(int argc, char* argv[]) {
         if (scene_loaded) {
             renderer_upload_gaussians(&renderer, &scene);
         }
+    }
+
+    // Reference views
+    RefViewSet refviews = {};
+    refviews.selected = -1;
+    bool refviews_loaded = false;
+    if (colmap_dir) {
+        refviews_loaded = refview_load(&refviews, colmap_dir);
     }
 
     // Camera
@@ -133,11 +149,16 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // Update camera (skip if ImGui wants keyboard)
-        if (!ImGui::GetIO().WantCaptureKeyboard) {
+        // Update reference view interpolation (locks camera input while active)
+        bool camera_locked = refview_update(&refviews, &cam, dt);
+
+        // Update camera (skip if ImGui wants keyboard or camera is locked)
+        if (camera_locked) {
+            // do nothing, refview_update drives the camera
+        } else if (!ImGui::GetIO().WantCaptureKeyboard) {
             camera_update(&cam, keys, mouse_dx, mouse_dy, dt);
         } else {
-            camera_update(&cam, keys, mouse_dx, mouse_dy, 0); // still update look but not movement
+            camera_update(&cam, keys, mouse_dx, mouse_dy, 0);
         }
 
         // Get window size
@@ -183,6 +204,26 @@ int main(int argc, char* argv[]) {
         ImGui::Text("Speed: %.1f", cam.move_speed);
         ImGui::End();
 
+        if (refviews_loaded) {
+            ImGui::Begin("Reference Views");
+            for (uint32_t i = 0; i < refviews.count; i++) {
+                char label[32];
+                snprintf(label, sizeof(label), "%u", i);
+                bool is_selected = ((int32_t)i == refviews.selected);
+                if (ImGui::Selectable(label, is_selected)) {
+                    refviews.selected = i;
+                    refviews.lerping = true;
+                    refviews.lerp_t = 0.0f;
+                    refviews.start_pos[0] = cam.position[0];
+                    refviews.start_pos[1] = cam.position[1];
+                    refviews.start_pos[2] = cam.position[2];
+                    refviews.start_yaw = cam.yaw;
+                    refviews.start_pitch = cam.pitch;
+                }
+            }
+            ImGui::End();
+        }
+
         ImGui::Render();
 
         // Render
@@ -193,6 +234,7 @@ int main(int argc, char* argv[]) {
     SDL_WaitForGPUIdle(device);
 
     if (scene_loaded) free_scene(&scene);
+    if (refviews_loaded) refview_free(&refviews);
     renderer_destroy(&renderer);
 
     ImGui_ImplSDLGPU3_Shutdown();
