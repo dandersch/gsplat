@@ -279,6 +279,38 @@ bool refview_update(RefViewSet* set, Camera* cam, float dt) {
     return true;
 }
 
+void refview_get_rotation_matrix(const RefView* v, float* m) {
+    // Build world-to-camera rotation from colmap quaternion
+    float qw = v->rotation[0], qx = v->rotation[1];
+    float qy = v->rotation[2], qz = v->rotation[3];
+
+    // R = colmap world-to-camera rotation (colmap world has Y-down)
+    // We need R_adjusted = R * diag(1, -1, 1) to account for our Y-up world
+    // This negates column 1 of R
+    // Output is column-major mat4
+
+    float R[3][3];
+    R[0][0] = 1 - 2*(qy*qy + qz*qz);
+    R[0][1] = 2*(qx*qy - qw*qz);
+    R[0][2] = 2*(qx*qz + qw*qy);
+    R[1][0] = 2*(qx*qy + qw*qz);
+    R[1][1] = 1 - 2*(qx*qx + qz*qz);
+    R[1][2] = 2*(qy*qz - qw*qx);
+    R[2][0] = 2*(qx*qz - qw*qy);
+    R[2][1] = 2*(qy*qz + qw*qx);
+    R[2][2] = 1 - 2*(qx*qx + qy*qy);
+
+    // Column-major mat4, with Y-flip (negate column 1)
+    // Column 0
+    m[0]  = R[0][0];  m[1]  = R[1][0];  m[2]  = R[2][0];  m[3]  = 0;
+    // Column 1 (negated for Y-flip)
+    m[4]  = -R[0][1]; m[5]  = -R[1][1]; m[6]  = -R[2][1]; m[7]  = 0;
+    // Column 2
+    m[8]  = R[0][2];  m[9]  = R[1][2];  m[10] = R[2][2];  m[11] = 0;
+    // Column 3
+    m[12] = 0;         m[13] = 0;         m[14] = 0;         m[15] = 1;
+}
+
 void refview_free(RefViewSet* set) {
     free(set->views);
     memset(set, 0, sizeof(*set));

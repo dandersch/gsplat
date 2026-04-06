@@ -11,6 +11,8 @@ IMGUI_DIR="third_party/imgui"
 echo "Compiling shaders..."
 glslc -fshader-stage=vertex shaders/splat.vert.glsl -o shaders/splat.vert.spv
 glslc -fshader-stage=fragment shaders/splat.frag.glsl -o shaders/splat.frag.spv
+glslc -fshader-stage=vertex shaders/overlay.vert.glsl -o shaders/overlay.vert.spv
+glslc -fshader-stage=fragment shaders/overlay.frag.glsl -o shaders/overlay.frag.spv
 
 SRCS=(
     src/main.cpp

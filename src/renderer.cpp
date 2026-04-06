@@ -97,6 +97,84 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
         return false;
     }
 
+    // --- Overlay pipeline ---
+    size_t ov_vert_size, ov_frag_size;
+    uint8_t* ov_vert_code = load_file("shaders/overlay.vert.spv", &ov_vert_size);
+    uint8_t* ov_frag_code = load_file("shaders/overlay.frag.spv", &ov_frag_size);
+    if (!ov_vert_code || !ov_frag_code) {
+        fprintf(stderr, "Failed to load overlay shaders\n");
+        free(ov_vert_code); free(ov_frag_code);
+        return false;
+    }
+
+    SDL_GPUShaderCreateInfo ov_vert_info = {};
+    ov_vert_info.code = ov_vert_code;
+    ov_vert_info.code_size = ov_vert_size;
+    ov_vert_info.entrypoint = "main";
+    ov_vert_info.format = SDL_GPU_SHADERFORMAT_SPIRV;
+    ov_vert_info.stage = SDL_GPU_SHADERSTAGE_VERTEX;
+
+    SDL_GPUShader* ov_vert = SDL_CreateGPUShader(device, &ov_vert_info);
+    free(ov_vert_code);
+
+    SDL_GPUShaderCreateInfo ov_frag_info = {};
+    ov_frag_info.code = ov_frag_code;
+    ov_frag_info.code_size = ov_frag_size;
+    ov_frag_info.entrypoint = "main";
+    ov_frag_info.format = SDL_GPU_SHADERFORMAT_SPIRV;
+    ov_frag_info.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+    ov_frag_info.num_samplers = 1;
+    ov_frag_info.num_uniform_buffers = 1;
+
+    SDL_GPUShader* ov_frag = SDL_CreateGPUShader(device, &ov_frag_info);
+    free(ov_frag_code);
+
+    if (!ov_vert || !ov_frag) {
+        fprintf(stderr, "FAIL overlay shaders: %s\n", SDL_GetError());
+        if (ov_vert) SDL_ReleaseGPUShader(device, ov_vert);
+        if (ov_frag) SDL_ReleaseGPUShader(device, ov_frag);
+        return false;
+    }
+
+    SDL_GPUColorTargetDescription ov_color_target = {};
+    ov_color_target.format = r->swapchain_format;
+    ov_color_target.blend_state.enable_blend = true;
+    ov_color_target.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+    ov_color_target.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    ov_color_target.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
+    ov_color_target.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+    ov_color_target.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    ov_color_target.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+    ov_color_target.blend_state.color_write_mask = SDL_GPU_COLORCOMPONENT_R | SDL_GPU_COLORCOMPONENT_G | SDL_GPU_COLORCOMPONENT_B | SDL_GPU_COLORCOMPONENT_A;
+
+    SDL_GPUGraphicsPipelineCreateInfo ov_pipeline_info = {};
+    ov_pipeline_info.vertex_shader = ov_vert;
+    ov_pipeline_info.fragment_shader = ov_frag;
+    ov_pipeline_info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    ov_pipeline_info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+    ov_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+    ov_pipeline_info.target_info.num_color_targets = 1;
+    ov_pipeline_info.target_info.color_target_descriptions = &ov_color_target;
+
+    r->overlay_pipeline = SDL_CreateGPUGraphicsPipeline(device, &ov_pipeline_info);
+    SDL_ReleaseGPUShader(device, ov_vert);
+    SDL_ReleaseGPUShader(device, ov_frag);
+
+    if (!r->overlay_pipeline) {
+        fprintf(stderr, "FAIL overlay pipeline: %s\n", SDL_GetError());
+        return false;
+    }
+
+    // Overlay sampler (linear filtering for smooth panorama sampling)
+    SDL_GPUSamplerCreateInfo sampler_info = {};
+    sampler_info.min_filter = SDL_GPU_FILTER_LINEAR;
+    sampler_info.mag_filter = SDL_GPU_FILTER_LINEAR;
+    sampler_info.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+    sampler_info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+    sampler_info.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    sampler_info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    r->overlay_sampler = SDL_CreateGPUSampler(device, &sampler_info);
+
     fprintf(stderr, "Renderer init OK\n");
     return true;
 }
@@ -170,7 +248,7 @@ void renderer_upload_gaussians(Renderer* r, const GaussianScene* scene) {
     fprintf(stderr, "Uploaded %u gaussians\n", scene->gaussian_count);
 }
 
-void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUniforms* cam) {
+void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUniforms* cam, const OverlayParams* overlay) {
     // Get current frame's transfer buffer and fence
     uint32_t buf_idx = r->current_frame % MAX_FRAMES_IN_FLIGHT;
     SDL_GPUTransferBuffer* transfer_buf = r->transfer_bufs[buf_idx];
@@ -252,6 +330,31 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
         SDL_DrawGPUPrimitives(pass, 6, scene->visible_count, 0, 0);
     }
 
+    // Overlay (equirectangular panorama)
+    if (overlay && overlay->texture && overlay->alpha > 0.0f && r->overlay_pipeline) {
+        SDL_BindGPUGraphicsPipeline(pass, r->overlay_pipeline);
+
+        SDL_GPUTextureSamplerBinding sampler_binding = {};
+        sampler_binding.texture = overlay->texture;
+        sampler_binding.sampler = r->overlay_sampler;
+        SDL_BindGPUFragmentSamplers(pass, 0, &sampler_binding, 1);
+
+        // Pack uniforms: inv_view_proj (64) + ref_rotation (64) + alpha (4) + pad (12) = 144 bytes
+        struct {
+            float inv_view_proj[16];
+            float ref_rotation[16];
+            float alpha;
+            float pad[3];
+        } ov_uniforms;
+        memcpy(ov_uniforms.inv_view_proj, overlay->inv_view_proj, sizeof(float) * 16);
+        memcpy(ov_uniforms.ref_rotation, overlay->ref_rotation, sizeof(float) * 16);
+        ov_uniforms.alpha = overlay->alpha;
+        ov_uniforms.pad[0] = ov_uniforms.pad[1] = ov_uniforms.pad[2] = 0;
+
+        SDL_PushGPUFragmentUniformData(cmd, 0, &ov_uniforms, sizeof(ov_uniforms));
+        SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+    }
+
     // ImGui
     ImGui_ImplSDLGPU3_RenderDrawData(ImGui::GetDrawData(), cmd, pass);
 
@@ -272,6 +375,8 @@ void renderer_destroy(Renderer* r) {
     }
     
     if (r->splat_pipeline) SDL_ReleaseGPUGraphicsPipeline(r->device, r->splat_pipeline);
+    if (r->overlay_pipeline) SDL_ReleaseGPUGraphicsPipeline(r->device, r->overlay_pipeline);
+    if (r->overlay_sampler) SDL_ReleaseGPUSampler(r->device, r->overlay_sampler);
     if (r->gaussian_buffer) SDL_ReleaseGPUBuffer(r->device, r->gaussian_buffer);
     if (r->index_buffer) SDL_ReleaseGPUBuffer(r->device, r->index_buffer);
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {

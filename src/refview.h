@@ -38,4 +38,7 @@ void refview_release_images(RefViewSet* set, SDL_GPUDevice* device);
 // Advance interpolation, write into cam. Returns true while lerping (camera locked).
 bool refview_update(RefViewSet* set, Camera* cam, float dt);
 
+// Build rotation matrix (with Y-flip) from colmap quaternion into a column-major mat4.
+void refview_get_rotation_matrix(const RefView* v, float* out_mat4);
+
 void refview_free(RefViewSet* set);
