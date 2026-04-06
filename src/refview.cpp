@@ -126,6 +126,129 @@ bool refview_load(RefViewSet* set, const char* colmap_dir) {
     return true;
 }
 
+struct ImageLoadTask {
+    char      path[768];
+    SDL_Surface* result;  // NULL on failure
+};
+
+static int image_load_thread(void* data) {
+    ImageLoadTask* task = (ImageLoadTask*)data;
+    SDL_Surface* surface = SDL_LoadBMP(task->path);
+    if (!surface) surface = SDL_LoadPNG(task->path);
+    if (!surface) {
+        task->result = NULL;
+        return 0;
+    }
+    task->result = SDL_ConvertSurface(surface, SDL_PIXELFORMAT_ABGR8888);
+    SDL_DestroySurface(surface);
+    return 0;
+}
+
+void refview_load_images(RefViewSet* set, SDL_GPUDevice* device) {
+    // Decode all images in parallel on separate threads
+    ImageLoadTask* tasks = (ImageLoadTask*)calloc(set->count, sizeof(ImageLoadTask));
+    SDL_Thread** threads = (SDL_Thread**)calloc(set->count, sizeof(SDL_Thread*));
+
+    for (uint32_t i = 0; i < set->count; i++) {
+        snprintf(tasks[i].path, sizeof(tasks[i].path), "%s/%s", set->image_dir, set->views[i].image_name);
+        char name[32];
+        snprintf(name, sizeof(name), "img_%u", i);
+        threads[i] = SDL_CreateThread(image_load_thread, name, &tasks[i]);
+    }
+
+    // Wait for all threads and upload to GPU
+    SDL_GPUTransferBuffer** xfer_bufs = (SDL_GPUTransferBuffer**)calloc(set->count, sizeof(SDL_GPUTransferBuffer*));
+    uint32_t loaded = 0;
+
+    SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(device);
+    SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);
+
+    for (uint32_t i = 0; i < set->count; i++) {
+        SDL_WaitThread(threads[i], NULL);
+        RefView* v = &set->views[i];
+        SDL_Surface* rgba = tasks[i].result;
+
+        if (!rgba) {
+            SDL_Log("RefView: Could not load image %s", tasks[i].path);
+            continue;
+        }
+
+        v->width = rgba->w;
+        v->height = rgba->h;
+
+        SDL_GPUTextureCreateInfo tex_info = {};
+        tex_info.type = SDL_GPU_TEXTURETYPE_2D;
+        tex_info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        tex_info.width = rgba->w;
+        tex_info.height = rgba->h;
+        tex_info.layer_count_or_depth = 1;
+        tex_info.num_levels = 1;
+        tex_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+
+        v->texture = SDL_CreateGPUTexture(device, &tex_info);
+        if (!v->texture) {
+            SDL_Log("RefView: Failed to create GPU texture for %s: %s", tasks[i].path, SDL_GetError());
+            SDL_DestroySurface(rgba);
+            continue;
+        }
+
+        uint32_t data_size = rgba->w * rgba->h * 4;
+
+        SDL_GPUTransferBufferCreateInfo xfer_info = {};
+        xfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+        xfer_info.size = data_size;
+        SDL_GPUTransferBuffer* xfer = SDL_CreateGPUTransferBuffer(device, &xfer_info);
+        if (!xfer) {
+            SDL_Log("RefView: Failed to create transfer buffer for %s", tasks[i].path);
+            SDL_ReleaseGPUTexture(device, v->texture);
+            v->texture = NULL;
+            SDL_DestroySurface(rgba);
+            continue;
+        }
+
+        void* map = SDL_MapGPUTransferBuffer(device, xfer, false);
+        memcpy(map, rgba->pixels, data_size);
+        SDL_UnmapGPUTransferBuffer(device, xfer);
+        SDL_DestroySurface(rgba);
+
+        SDL_GPUTextureTransferInfo src = {};
+        src.transfer_buffer = xfer;
+        src.offset = 0;
+
+        SDL_GPUTextureRegion dst = {};
+        dst.texture = v->texture;
+        dst.w = v->width;
+        dst.h = v->height;
+        dst.d = 1;
+
+        SDL_UploadToGPUTexture(copy, &src, &dst, false);
+        xfer_bufs[loaded] = xfer;
+        loaded++;
+    }
+
+    SDL_EndGPUCopyPass(copy);
+    SDL_SubmitGPUCommandBuffer(cmd);
+    SDL_WaitForGPUIdle(device);
+
+    for (uint32_t i = 0; i < loaded; i++) {
+        SDL_ReleaseGPUTransferBuffer(device, xfer_bufs[i]);
+    }
+    free(xfer_bufs);
+    free(threads);
+    free(tasks);
+
+    SDL_Log("RefView: Loaded %u / %u images as GPU textures", loaded, set->count);
+}
+
+void refview_release_images(RefViewSet* set, SDL_GPUDevice* device) {
+    for (uint32_t i = 0; i < set->count; i++) {
+        if (set->views[i].texture) {
+            SDL_ReleaseGPUTexture(device, set->views[i].texture);
+            set->views[i].texture = NULL;
+        }
+    }
+}
+
 static float lerpf(float a, float b, float t) {
     return a + (b - a) * t;
 }

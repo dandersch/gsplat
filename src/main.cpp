@@ -79,6 +79,9 @@ int main(int argc, char* argv[]) {
     bool refviews_loaded = false;
     if (colmap_dir) {
         refviews_loaded = refview_load(&refviews, colmap_dir);
+        if (refviews_loaded) {
+            refview_load_images(&refviews, device);
+        }
     }
 
     // Camera
@@ -234,7 +237,10 @@ int main(int argc, char* argv[]) {
     SDL_WaitForGPUIdle(device);
 
     if (scene_loaded) free_scene(&scene);
-    if (refviews_loaded) refview_free(&refviews);
+    if (refviews_loaded) {
+        refview_release_images(&refviews, device);
+        refview_free(&refviews);
+    }
     renderer_destroy(&renderer);
 
     ImGui_ImplSDLGPU3_Shutdown();
