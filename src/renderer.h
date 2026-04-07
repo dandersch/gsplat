@@ -8,7 +8,8 @@
 
 struct OverlayParams {
     SDL_GPUTexture* texture;       // panorama texture to render (NULL = no overlay)
-    float           inv_view_proj[16];
+    float           camera_ray_basis[16];
+    float           camera_tan_half_fov[2];
     float           ref_rotation[16]; // mat4, 3x3 in upper-left, Y-flip baked in
     float           alpha;
 };

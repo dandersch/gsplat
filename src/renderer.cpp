@@ -339,17 +339,22 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
         sampler_binding.sampler = r->overlay_sampler;
         SDL_BindGPUFragmentSamplers(pass, 0, &sampler_binding, 1);
 
-        // Pack uniforms: inv_view_proj (64) + ref_rotation (64) + alpha (4) + pad (12) = 144 bytes
+        // Pack uniforms: camera_ray_basis (64) + tan_half_fov (8) + pad (8)
+        //              + ref_rotation (64) + alpha (4) + pad (12) = 160 bytes
         struct {
-            float inv_view_proj[16];
+            float camera_ray_basis[16];
+            float camera_tan_half_fov[2];
+            float camera_pad[2];
             float ref_rotation[16];
             float alpha;
-            float pad[3];
+            float alpha_pad[3];
         } ov_uniforms;
-        memcpy(ov_uniforms.inv_view_proj, overlay->inv_view_proj, sizeof(float) * 16);
+        memcpy(ov_uniforms.camera_ray_basis, overlay->camera_ray_basis, sizeof(float) * 16);
+        memcpy(ov_uniforms.camera_tan_half_fov, overlay->camera_tan_half_fov, sizeof(float) * 2);
+        ov_uniforms.camera_pad[0] = ov_uniforms.camera_pad[1] = 0.0f;
         memcpy(ov_uniforms.ref_rotation, overlay->ref_rotation, sizeof(float) * 16);
         ov_uniforms.alpha = overlay->alpha;
-        ov_uniforms.pad[0] = ov_uniforms.pad[1] = ov_uniforms.pad[2] = 0;
+        ov_uniforms.alpha_pad[0] = ov_uniforms.alpha_pad[1] = ov_uniforms.alpha_pad[2] = 0.0f;
 
         SDL_PushGPUFragmentUniformData(cmd, 0, &ov_uniforms, sizeof(ov_uniforms));
         SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);

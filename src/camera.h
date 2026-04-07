@@ -26,3 +26,4 @@ void camera_update(Camera* cam, const bool* keys, float dx, float dy, float dt);
 void camera_get_view_matrix(const Camera* cam, float* out);
 void camera_get_proj_matrix(const Camera* cam, float aspect, float* out);
 void camera_get_forward(const Camera* cam, float* out);
+void camera_get_overlay_ray_basis(const Camera* cam, float aspect, float* out_mat4, float* out_tan_half_fov);

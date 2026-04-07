@@ -12,43 +12,6 @@
 #include "renderer.h"
 #include "refview.h"
 
-// Column-major 4x4 matrix multiply: out = A * B
-static void mat4_mul(const float* A, const float* B, float* out) {
-    for (int c = 0; c < 4; c++) {
-        for (int r = 0; r < 4; r++) {
-            out[c*4+r] = A[0*4+r]*B[c*4+0] + A[1*4+r]*B[c*4+1]
-                       + A[2*4+r]*B[c*4+2] + A[3*4+r]*B[c*4+3];
-        }
-    }
-}
-
-// Invert a column-major 4x4 matrix (general case)
-static bool mat4_invert(const float* m, float* inv) {
-    float t[16];
-    t[0]  =  m[5]*m[10]*m[15] - m[5]*m[11]*m[14] - m[9]*m[6]*m[15] + m[9]*m[7]*m[14] + m[13]*m[6]*m[11] - m[13]*m[7]*m[10];
-    t[4]  = -m[4]*m[10]*m[15] + m[4]*m[11]*m[14] + m[8]*m[6]*m[15] - m[8]*m[7]*m[14] - m[12]*m[6]*m[11] + m[12]*m[7]*m[10];
-    t[8]  =  m[4]*m[9]*m[15]  - m[4]*m[11]*m[13] - m[8]*m[5]*m[15] + m[8]*m[7]*m[13] + m[12]*m[5]*m[11] - m[12]*m[7]*m[9];
-    t[12] = -m[4]*m[9]*m[14]  + m[4]*m[10]*m[13] + m[8]*m[5]*m[14] - m[8]*m[6]*m[13] - m[12]*m[5]*m[10] + m[12]*m[6]*m[9];
-    t[1]  = -m[1]*m[10]*m[15] + m[1]*m[11]*m[14] + m[9]*m[2]*m[15] - m[9]*m[3]*m[14] - m[13]*m[2]*m[11] + m[13]*m[3]*m[10];
-    t[5]  =  m[0]*m[10]*m[15] - m[0]*m[11]*m[14] - m[8]*m[2]*m[15] + m[8]*m[3]*m[14] + m[12]*m[2]*m[11] - m[12]*m[3]*m[10];
-    t[9]  = -m[0]*m[9]*m[15]  + m[0]*m[11]*m[13] + m[8]*m[1]*m[15] - m[8]*m[3]*m[13] - m[12]*m[1]*m[11] + m[12]*m[3]*m[9];
-    t[13] =  m[0]*m[9]*m[14]  - m[0]*m[10]*m[13] - m[8]*m[1]*m[14] + m[8]*m[2]*m[13] + m[12]*m[1]*m[10] - m[12]*m[2]*m[9];
-    t[2]  =  m[1]*m[6]*m[15]  - m[1]*m[7]*m[14]  - m[5]*m[2]*m[15] + m[5]*m[3]*m[14] + m[13]*m[2]*m[7]  - m[13]*m[3]*m[6];
-    t[6]  = -m[0]*m[6]*m[15]  + m[0]*m[7]*m[14]  + m[4]*m[2]*m[15] - m[4]*m[3]*m[14] - m[12]*m[2]*m[7]  + m[12]*m[3]*m[6];
-    t[10] =  m[0]*m[5]*m[15]  - m[0]*m[7]*m[13]  - m[4]*m[1]*m[15] + m[4]*m[3]*m[13] + m[12]*m[1]*m[7]  - m[12]*m[3]*m[5];
-    t[14] = -m[0]*m[5]*m[14]  + m[0]*m[6]*m[13]  + m[4]*m[1]*m[14] - m[4]*m[2]*m[13] - m[12]*m[1]*m[6]  + m[12]*m[2]*m[5];
-    t[3]  = -m[1]*m[6]*m[11]  + m[1]*m[7]*m[10]  + m[5]*m[2]*m[11] - m[5]*m[3]*m[10] - m[9]*m[2]*m[7]   + m[9]*m[3]*m[6];
-    t[7]  =  m[0]*m[6]*m[11]  - m[0]*m[7]*m[10]  - m[4]*m[2]*m[11] + m[4]*m[3]*m[10] + m[8]*m[2]*m[7]   - m[8]*m[3]*m[6];
-    t[11] = -m[0]*m[5]*m[11]  + m[0]*m[7]*m[9]   + m[4]*m[1]*m[11] - m[4]*m[3]*m[9]  - m[8]*m[1]*m[7]   + m[8]*m[3]*m[5];
-    t[15] =  m[0]*m[5]*m[10]  - m[0]*m[6]*m[9]   - m[4]*m[1]*m[10] + m[4]*m[2]*m[9]  + m[8]*m[1]*m[6]   - m[8]*m[2]*m[5];
-
-    float det = m[0]*t[0] + m[1]*t[4] + m[2]*t[8] + m[3]*t[12];
-    if (fabsf(det) < 1e-12f) return false;
-    float inv_det = 1.0f / det;
-    for (int i = 0; i < 16; i++) inv[i] = t[i] * inv_det;
-    return true;
-}
-
 int main(int argc, char* argv[]) {
     const char* ply_path = NULL;
     const char* colmap_dir = NULL;
@@ -286,10 +249,9 @@ int main(int argc, char* argv[]) {
                     overlay.texture = rv->texture;
                     overlay.alpha = alpha;
 
-                    // inv(view * proj)
-                    float vp[16];
-                    mat4_mul(cam_uniforms.proj, cam_uniforms.view, vp);
-                    mat4_invert(vp, overlay.inv_view_proj);
+                    camera_get_overlay_ray_basis(&cam, (float)win_w / (float)win_h,
+                                                 overlay.camera_ray_basis,
+                                                 overlay.camera_tan_half_fov);
 
                     refview_get_rotation_matrix(rv, overlay.ref_rotation);
                     overlay_ptr = &overlay;

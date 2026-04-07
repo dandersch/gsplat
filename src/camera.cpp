@@ -1,5 +1,8 @@
 #include "camera.h"
 
+static void cross(const float* a, const float* b, float* out);
+static void normalize3(float* v);
+
 void camera_init(Camera* cam) {
     cam->position[0] = 0.0f;
     cam->position[1] = 0.0f;
@@ -18,6 +21,35 @@ void camera_get_forward(const Camera* cam, float* out) {
     out[0] = cosf(cam->pitch) * sinf(cam->yaw);
     out[1] = sinf(cam->pitch);
     out[2] = cosf(cam->pitch) * cosf(cam->yaw);
+}
+
+void camera_get_overlay_ray_basis(const Camera* cam, float aspect, float* out_mat4, float* out_tan_half_fov) {
+    float forward[3], right[3], up[3];
+    float world_up[3] = {0, 1, 0};
+    camera_get_forward(cam, forward);
+
+    // Build a right-handed horizontal basis for the panorama ray while keeping
+    // the existing vertical flip in shader space.
+    cross(world_up, forward, right);
+    normalize3(right);
+    cross(forward, right, up);
+    normalize3(up);
+
+    memset(out_mat4, 0, 16 * sizeof(float));
+    out_mat4[0]  = right[0];
+    out_mat4[1]  = right[1];
+    out_mat4[2]  = right[2];
+    out_mat4[4]  = up[0];
+    out_mat4[5]  = up[1];
+    out_mat4[6]  = up[2];
+    out_mat4[8]  = forward[0];
+    out_mat4[9]  = forward[1];
+    out_mat4[10] = forward[2];
+    out_mat4[15] = 1.0f;
+
+    float tan_half_fov_y = tanf(cam->fov_y * 0.5f);
+    out_tan_half_fov[0] = tan_half_fov_y * aspect;
+    out_tan_half_fov[1] = tan_half_fov_y;
 }
 
 static void cross(const float* a, const float* b, float* out) {
