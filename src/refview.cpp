@@ -273,8 +273,22 @@ bool refview_update(RefViewSet* set, Camera* cam, float dt) {
     cam->position[0] = lerpf(set->start_pos[0], target->position[0], t);
     cam->position[1] = lerpf(set->start_pos[1], target->position[1], t);
     cam->position[2] = lerpf(set->start_pos[2], target->position[2], t);
-    cam->yaw   = lerpf(set->start_yaw,   target->yaw,   t);
-    cam->pitch = lerpf(set->start_pitch,  target->pitch,  t);
+
+    // Compute look-at direction from current position toward target node
+    float dx = target->position[0] - cam->position[0];
+    float dy = target->position[1] - cam->position[1];
+    float dz = target->position[2] - cam->position[2];
+    float len = sqrtf(dx*dx + dy*dy + dz*dz);
+
+    if (len > 1e-6f) {
+        float target_yaw   = atan2f(dx, dz);
+        float target_pitch = asinf(dy / len);
+        // Wrap yaw difference to [-π, π] so we always take the short path
+        float yaw_diff = target_yaw - set->start_yaw;
+        yaw_diff = fmodf(yaw_diff + 3.14159265f, 2.0f * 3.14159265f) - 3.14159265f;
+        cam->yaw   = set->start_yaw + yaw_diff * t;
+        cam->pitch = lerpf(set->start_pitch,  target_pitch,  t);
+    }
 
     return true;
 }
