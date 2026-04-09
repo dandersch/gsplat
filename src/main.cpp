@@ -92,6 +92,7 @@ int main(int argc, char* argv[]) {
     uint64_t last_time = SDL_GetPerformanceCounter();
     uint64_t freq = SDL_GetPerformanceFrequency();
     bool running = true;
+    bool show_refviews = true;
     int frame_num = 0;
 
     while (running) {
@@ -205,6 +206,9 @@ int main(int argc, char* argv[]) {
         }
         ImGui::Text("Camera: %.1f, %.1f, %.1f", cam.position[0], cam.position[1], cam.position[2]);
         ImGui::Text("Speed: %.1f", cam.move_speed);
+        if (refviews_loaded) {
+            ImGui::Checkbox("Show Reference Views", &show_refviews);
+        }
         ImGui::End();
 
         if (refviews_loaded) {
@@ -232,7 +236,7 @@ int main(int argc, char* argv[]) {
         // Build overlay params if a refview is selected and has a texture
         OverlayParams overlay = {};
         OverlayParams* overlay_ptr = NULL;
-        if (refviews_loaded && refviews.selected >= 0) {
+        if (refviews_loaded && show_refviews && refviews.selected >= 0) {
             RefView* rv = &refviews.views[refviews.selected];
             if (rv->texture) {
                 // Compute distance-based alpha (fade out as camera moves away)

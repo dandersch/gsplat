@@ -51,7 +51,7 @@ static void colmap_to_camera(float qw, float qx, float qy, float qz,
 bool refview_load(RefViewSet* set, const char* colmap_dir) {
     memset(set, 0, sizeof(*set));
     set->selected = -1;
-    set->lerp_duration = 0.5f;
+    set->lerp_duration = 1.5f;
 
     // Build path to images.txt
     char images_txt[512];
