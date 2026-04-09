@@ -233,17 +233,25 @@ int main(int argc, char* argv[]) {
 
         ImGui::Render();
 
-        // Build overlay params if a refview is selected and has a texture
+        // Build overlay params for the closest refview node to the camera
         OverlayParams overlay = {};
         OverlayParams* overlay_ptr = NULL;
-        if (refviews_loaded && show_refviews && refviews.selected >= 0) {
-            RefView* rv = &refviews.views[refviews.selected];
-            if (rv->texture) {
-                // Compute distance-based alpha (fade out as camera moves away)
-                float dx = cam.position[0] - rv->position[0];
-                float dy = cam.position[1] - rv->position[1];
-                float dz = cam.position[2] - rv->position[2];
-                float dist = sqrtf(dx*dx + dy*dy + dz*dz);
+        if (refviews_loaded && show_refviews) {
+            // Find closest node with a loaded texture
+            float best_dist2 = 1e30f;
+            int best_idx = -1;
+            for (uint32_t i = 0; i < refviews.count; i++) {
+                if (!refviews.views[i].texture) continue;
+                float dx = cam.position[0] - refviews.views[i].position[0];
+                float dy = cam.position[1] - refviews.views[i].position[1];
+                float dz = cam.position[2] - refviews.views[i].position[2];
+                float d2 = dx*dx + dy*dy + dz*dz;
+                if (d2 < best_dist2) { best_dist2 = d2; best_idx = (int)i; }
+            }
+
+            if (best_idx >= 0) {
+                RefView* rv = &refviews.views[best_idx];
+                float dist = sqrtf(best_dist2);
                 float fade_dist = 2.0f;
                 float alpha = 1.0f - dist / fade_dist;
                 if (alpha < 0.0f) alpha = 0.0f;
