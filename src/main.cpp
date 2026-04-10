@@ -206,6 +206,10 @@ int main(int argc, char* argv[]) {
         }
         ImGui::Text("Camera: %.1f, %.1f, %.1f", cam.position[0], cam.position[1], cam.position[2]);
         ImGui::Text("Speed: %.1f", cam.move_speed);
+        float fov_deg = cam.fov_y * (180.0f / 3.14159265358979f);
+        if (ImGui::SliderFloat("FOV", &fov_deg, 10.0f, 170.0f, "%.0f°")) {
+            cam.fov_y = fov_deg * (3.14159265358979f / 180.0f);
+        }
         if (refviews_loaded) {
             ImGui::Checkbox("Show Reference Views", &show_refviews);
         }
