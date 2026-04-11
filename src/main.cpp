@@ -256,7 +256,7 @@ int main(int argc, char* argv[]) {
             if (best_idx >= 0) {
                 RefView* rv = &refviews.views[best_idx];
                 float dist = sqrtf(best_dist2);
-                float fade_dist = 2.0f;
+                float fade_dist = 0.5f;
                 float alpha = 1.0f - dist / fade_dist;
                 if (alpha < 0.0f) alpha = 0.0f;
                 if (alpha > 1.0f) alpha = 1.0f;
