@@ -92,7 +92,7 @@ int main(int argc, char* argv[]) {
     uint64_t last_time = SDL_GetPerformanceCounter();
     uint64_t freq = SDL_GetPerformanceFrequency();
     bool running = true;
-    bool show_refviews = true;
+    float refview_max_alpha = 1.0f;
     int frame_num = 0;
 
     while (running) {
@@ -211,7 +211,7 @@ int main(int argc, char* argv[]) {
             cam.fov_y = fov_deg * (3.14159265358979f / 180.0f);
         }
         if (refviews_loaded) {
-            ImGui::Checkbox("Show Reference Views", &show_refviews);
+            ImGui::SliderFloat("Ref View Opacity", &refview_max_alpha, 0.0f, 1.0f);
         }
         ImGui::End();
 
@@ -240,7 +240,7 @@ int main(int argc, char* argv[]) {
         // Build overlay params for the closest refview node to the camera
         OverlayParams overlay = {};
         OverlayParams* overlay_ptr = NULL;
-        if (refviews_loaded && show_refviews) {
+        if (refviews_loaded && refview_max_alpha > 0.0f) {
             // Find closest node with a loaded texture
             float best_dist2 = 1e30f;
             int best_idx = -1;
@@ -259,7 +259,7 @@ int main(int argc, char* argv[]) {
                 float fade_dist = 0.5f;
                 float alpha = 1.0f - dist / fade_dist;
                 if (alpha < 0.0f) alpha = 0.0f;
-                if (alpha > 1.0f) alpha = 1.0f;
+                if (alpha > refview_max_alpha) alpha = refview_max_alpha;
 
                 if (alpha > 0.0f) {
                     overlay.texture = rv->texture;
