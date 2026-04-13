@@ -7,10 +7,10 @@
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_sdlgpu3.h"
 
-#include "camera.h"
-#include "gaussian.h"
-#include "renderer.h"
-#include "refview.h"
+#include "camera.cpp"
+#include "gaussian.cpp"
+#include "renderer.cpp"
+#include "refview.cpp"
 
 int main(int argc, char* argv[]) {
     const char* ply_path = NULL;
