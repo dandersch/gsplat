@@ -16,6 +16,7 @@ struct RefViewSet {
     RefView* views;
     uint32_t count;
     int32_t  selected;         // -1 = none
+    int32_t  current_node;     // nearest node to camera (updated each frame externally)
     char     image_dir[512];   // resolved path to images/
 
     // lerp state
@@ -24,6 +25,9 @@ struct RefViewSet {
     float    lerp_duration;
     float    start_pos[3];
     float    start_yaw, start_pitch;
+
+    // neighbor discovery
+    float    neighbor_radius;  // only show nodes within this distance of current_node
 };
 
 // Parse colmap images.txt from colmap_dir. Derives image_dir as ../../images/ relative to colmap_dir.
@@ -37,6 +41,11 @@ void refview_release_images(RefViewSet* set, SDL_GPUDevice* device);
 
 // Advance interpolation, write into cam. Returns true while lerping (camera locked).
 bool refview_update(RefViewSet* set, Camera* cam, float dt);
+
+// Collect neighbor node positions (within neighbor_radius of current_node).
+// Writes up to max_count positions (float[3] each) and refview indices into out arrays.
+// Returns actual count written.
+uint32_t refview_get_neighbors(const RefViewSet* set, float* out_positions, uint32_t* out_indices, uint32_t max_count);
 
 // Build rotation matrix (with Y-flip) from colmap quaternion into a column-major mat4.
 void refview_get_rotation_matrix(const RefView* v, float* out_mat4);

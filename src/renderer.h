@@ -14,13 +14,22 @@ struct OverlayParams {
     float           alpha;
 };
 
+struct NodeRenderParams {
+    const float* positions;   // float[3] per node (world-space centers)
+    uint32_t     count;
+    float        half_size;   // AABB half-extent for the wireframe cubes
+};
+
 struct Renderer {
     SDL_GPUDevice*          device;
     SDL_Window*             window;
     SDL_GPUGraphicsPipeline* splat_pipeline;
     SDL_GPUGraphicsPipeline* overlay_pipeline;
+    SDL_GPUGraphicsPipeline* wireframe_pipeline;
     SDL_GPUSampler*         overlay_sampler;
     SDL_GPUBuffer*          gaussian_buffer;
+    SDL_GPUBuffer*          cube_vertex_buffer;
+    SDL_GPUBuffer*          cube_index_buffer;
     SDL_GPUBuffer*          index_buffer;
     SDL_GPUTransferBuffer*  transfer_bufs[MAX_FRAMES_IN_FLIGHT];
     SDL_GPUFence*           frame_fences[MAX_FRAMES_IN_FLIGHT];
@@ -31,5 +40,5 @@ struct Renderer {
 
 bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window);
 void renderer_upload_gaussians(Renderer* r, const GaussianScene* scene);
-void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUniforms* cam, const OverlayParams* overlay);
+void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUniforms* cam, const OverlayParams* overlay, const NodeRenderParams* nodes);
 void renderer_destroy(Renderer* r);

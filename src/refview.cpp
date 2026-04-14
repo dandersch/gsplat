@@ -51,7 +51,9 @@ static void colmap_to_camera(float qw, float qx, float qy, float qz,
 bool refview_load(RefViewSet* set, const char* colmap_dir) {
     memset(set, 0, sizeof(*set));
     set->selected = -1;
+    set->current_node = -1;
     set->lerp_duration = 1.5f;
+    set->neighbor_radius = 2.0f;
 
     // Build path to images.txt
     char images_txt[512];
@@ -291,6 +293,37 @@ bool refview_update(RefViewSet* set, Camera* cam, float dt) {
     }
 
     return true;
+}
+
+// TODO: For better neighbor connectivity, consider using actual colmap covisibility data
+// instead of a simple distance heuristic. Options:
+//   (a) Read colmap's database.db (SQLite) which stores an explicit covisibility graph.
+//   (b) Parse the POINTS2D lines in images.txt (currently skipped by skip_line()) — each
+//       line has (X, Y, POINT3D_ID) entries. Two images sharing enough POINT3D_IDs are
+//       covisible. Build adjacency from set intersection counts with a threshold.
+// For now, distance-based neighbor discovery is a reasonable approximation.
+uint32_t refview_get_neighbors(const RefViewSet* set, float* out_positions, uint32_t* out_indices, uint32_t max_count) {
+    if (set->current_node < 0 || set->current_node >= (int32_t)set->count) return 0;
+
+    const RefView* current = &set->views[set->current_node];
+    float radius2 = set->neighbor_radius * set->neighbor_radius;
+    uint32_t n = 0;
+
+    for (uint32_t i = 0; i < set->count && n < max_count; i++) {
+        if ((int32_t)i == set->current_node) continue;
+        float dx = set->views[i].position[0] - current->position[0];
+        float dy = set->views[i].position[1] - current->position[1];
+        float dz = set->views[i].position[2] - current->position[2];
+        float d2 = dx*dx + dy*dy + dz*dz;
+        if (d2 <= radius2) {
+            out_positions[n * 3 + 0] = set->views[i].position[0];
+            out_positions[n * 3 + 1] = set->views[i].position[1];
+            out_positions[n * 3 + 2] = set->views[i].position[2];
+            out_indices[n] = i;
+            n++;
+        }
+    }
+    return n;
 }
 
 void refview_get_rotation_matrix(const RefView* v, float* m) {

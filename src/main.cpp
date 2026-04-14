@@ -93,7 +93,14 @@ int main(int argc, char* argv[]) {
     uint64_t freq = SDL_GetPerformanceFrequency();
     bool running = true;
     float refview_max_alpha = 1.0f;
+    float node_half_size = 0.15f;
     int frame_num = 0;
+
+    // Neighbor scratch buffers
+    const uint32_t max_neighbors = 64;
+    float neighbor_positions[64 * 3];
+    uint32_t neighbor_indices[64];
+    uint32_t neighbor_count = 0;
 
     while (running) {
         uint64_t now = SDL_GetPerformanceCounter();
@@ -129,6 +136,91 @@ int main(int argc, char* argv[]) {
                 if (ev.button.button == SDL_BUTTON_RIGHT) {
                     cam.right_mouse_held = true;
                     SDL_SetWindowRelativeMouseMode(window, true);
+                }
+                if (ev.button.button == SDL_BUTTON_LEFT && refviews_loaded &&
+                    !ImGui::GetIO().WantCaptureMouse && !refviews.lerping) {
+                    // Ray-AABB intersection against neighbor nodes
+                    int w, h;
+                    SDL_GetWindowSize(window, &w, &h);
+                    float mx = ev.button.x;
+                    float my = ev.button.y;
+                    // NDC
+                    float ndc_x = (2.0f * mx / (float)w) - 1.0f;
+                    float ndc_y = 1.0f - (2.0f * my / (float)h); // Vulkan Y-flip
+
+                    // Unproject ray direction: inv(proj) then inv(view)
+                    float tan_half_fov = tanf(cam.fov_y * 0.5f);
+                    float aspect = (float)w / (float)h;
+                    // Camera-space ray direction (Vulkan proj has -f for Y)
+                    float ray_cam[3] = {
+                        ndc_x * tan_half_fov * aspect,
+                        ndc_y * tan_half_fov,
+                        1.0f // forward is +Z in camera space (view matrix maps forward to -Z, but we want world direction)
+                    };
+                    // Transform to world space using camera basis vectors
+                    float forward[3], right[3], up[3];
+                    camera_get_forward(&cam, forward);
+                    float world_up[3] = {0, 1, 0};
+                    // camera.cpp computes right = forward × world_up, which points LEFT.
+                    // We need actual right = world_up × forward for correct ray unprojection.
+                    right[0] = world_up[1]*forward[2] - world_up[2]*forward[1];
+                    right[1] = world_up[2]*forward[0] - world_up[0]*forward[2];
+                    right[2] = world_up[0]*forward[1] - world_up[1]*forward[0];
+                    float rlen = sqrtf(right[0]*right[0]+right[1]*right[1]+right[2]*right[2]);
+                    if (rlen > 1e-8f) { right[0]/=rlen; right[1]/=rlen; right[2]/=rlen; }
+                    up[0] = right[1]*forward[2] - right[2]*forward[1];
+                    up[1] = right[2]*forward[0] - right[0]*forward[2];
+                    up[2] = right[0]*forward[1] - right[1]*forward[0];
+
+                    float ray_dir[3] = {
+                        ray_cam[0]*right[0] + ray_cam[1]*up[0] + ray_cam[2]*forward[0],
+                        ray_cam[0]*right[1] + ray_cam[1]*up[1] + ray_cam[2]*forward[1],
+                        ray_cam[0]*right[2] + ray_cam[1]*up[2] + ray_cam[2]*forward[2],
+                    };
+                    float dlen = sqrtf(ray_dir[0]*ray_dir[0]+ray_dir[1]*ray_dir[1]+ray_dir[2]*ray_dir[2]);
+                    ray_dir[0]/=dlen; ray_dir[1]/=dlen; ray_dir[2]/=dlen;
+
+                    // Test against all neighbor AABBs, pick closest hit
+                    float best_t = 1e30f;
+                    int best_hit = -1;
+                    for (uint32_t ni = 0; ni < neighbor_count; ni++) {
+                        const float* center = &neighbor_positions[ni*3];
+                        float hs = node_half_size;
+                        // Slab method
+                        float tmin = -1e30f, tmax = 1e30f;
+                        for (int axis = 0; axis < 3; axis++) {
+                            float o = cam.position[axis];
+                            float d = ray_dir[axis];
+                            float bmin = center[axis] - hs;
+                            float bmax = center[axis] + hs;
+                            if (fabsf(d) < 1e-8f) {
+                                if (o < bmin || o > bmax) { tmin = 1e30f; break; }
+                            } else {
+                                float t1 = (bmin - o) / d;
+                                float t2 = (bmax - o) / d;
+                                if (t1 > t2) { float tmp = t1; t1 = t2; t2 = tmp; }
+                                if (t1 > tmin) tmin = t1;
+                                if (t2 < tmax) tmax = t2;
+                                if (tmin > tmax) { tmin = 1e30f; break; }
+                            }
+                        }
+                        if (tmin < best_t && tmax > 0.0f) {
+                            best_t = tmin;
+                            best_hit = (int)ni;
+                        }
+                    }
+
+                    if (best_hit >= 0) {
+                        uint32_t view_idx = neighbor_indices[best_hit];
+                        refviews.selected = (int32_t)view_idx;
+                        refviews.lerping = true;
+                        refviews.lerp_t = 0.0f;
+                        refviews.start_pos[0] = cam.position[0];
+                        refviews.start_pos[1] = cam.position[1];
+                        refviews.start_pos[2] = cam.position[2];
+                        refviews.start_yaw = cam.yaw;
+                        refviews.start_pitch = cam.pitch;
+                    }
                 }
                 break;
             case SDL_EVENT_MOUSE_BUTTON_UP:
@@ -212,6 +304,12 @@ int main(int argc, char* argv[]) {
         }
         if (refviews_loaded) {
             ImGui::SliderFloat("Ref View Opacity", &refview_max_alpha, 0.0f, 1.0f);
+            ImGui::SliderFloat("Neighbor Radius", &refviews.neighbor_radius, 0.5f, 10.0f);
+            ImGui::SliderFloat("Node Box Size", &node_half_size, 0.05f, 0.5f);
+            if (refviews.current_node >= 0) {
+                ImGui::Text("Current Node: %d", refviews.current_node);
+                ImGui::Text("Neighbors: %u", neighbor_count);
+            }
         }
         ImGui::End();
 
@@ -237,11 +335,10 @@ int main(int argc, char* argv[]) {
 
         ImGui::Render();
 
-        // Build overlay params for the closest refview node to the camera
+        // Find closest refview node to camera (used for overlay + current_node tracking)
         OverlayParams overlay = {};
         OverlayParams* overlay_ptr = NULL;
-        if (refviews_loaded && refview_max_alpha > 0.0f) {
-            // Find closest node with a loaded texture
+        if (refviews_loaded) {
             float best_dist2 = 1e30f;
             int best_idx = -1;
             for (uint32_t i = 0; i < refviews.count; i++) {
@@ -253,7 +350,9 @@ int main(int argc, char* argv[]) {
                 if (d2 < best_dist2) { best_dist2 = d2; best_idx = (int)i; }
             }
 
-            if (best_idx >= 0) {
+            refviews.current_node = best_idx;
+
+            if (best_idx >= 0 && refview_max_alpha > 0.0f) {
                 RefView* rv = &refviews.views[best_idx];
                 float dist = sqrtf(best_dist2);
                 float fade_dist = 0.5f;
@@ -273,10 +372,23 @@ int main(int argc, char* argv[]) {
                     overlay_ptr = &overlay;
                 }
             }
+
+            // Collect neighbor nodes for wireframe rendering + click targets
+            neighbor_count = refview_get_neighbors(&refviews, neighbor_positions, neighbor_indices, max_neighbors);
+        }
+
+        // Build node render params
+        NodeRenderParams node_params = {};
+        NodeRenderParams* node_ptr = NULL;
+        if (refviews_loaded && neighbor_count > 0) {
+            node_params.positions = neighbor_positions;
+            node_params.count = neighbor_count;
+            node_params.half_size = node_half_size;
+            node_ptr = &node_params;
         }
 
         // Render
-        renderer_draw_frame(&renderer, &scene, &cam_uniforms, overlay_ptr);
+        renderer_draw_frame(&renderer, &scene, &cam_uniforms, overlay_ptr, node_ptr);
         frame_num++;
     }
 

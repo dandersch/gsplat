@@ -175,6 +175,142 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
     sampler_info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
     r->overlay_sampler = SDL_CreateGPUSampler(device, &sampler_info);
 
+    // --- Wireframe pipeline ---
+    size_t wf_vert_size, wf_frag_size;
+    uint8_t* wf_vert_code = load_file("shaders/wireframe.vert.spv", &wf_vert_size);
+    uint8_t* wf_frag_code = load_file("shaders/wireframe.frag.spv", &wf_frag_size);
+    if (!wf_vert_code || !wf_frag_code) {
+        fprintf(stderr, "Failed to load wireframe shaders\n");
+        free(wf_vert_code); free(wf_frag_code);
+        return false;
+    }
+
+    SDL_GPUShaderCreateInfo wf_vert_info = {};
+    wf_vert_info.code = wf_vert_code;
+    wf_vert_info.code_size = wf_vert_size;
+    wf_vert_info.entrypoint = "main";
+    wf_vert_info.format = SDL_GPU_SHADERFORMAT_SPIRV;
+    wf_vert_info.stage = SDL_GPU_SHADERSTAGE_VERTEX;
+    wf_vert_info.num_uniform_buffers = 1;
+
+    SDL_GPUShader* wf_vert = SDL_CreateGPUShader(device, &wf_vert_info);
+    free(wf_vert_code);
+
+    SDL_GPUShaderCreateInfo wf_frag_info = {};
+    wf_frag_info.code = wf_frag_code;
+    wf_frag_info.code_size = wf_frag_size;
+    wf_frag_info.entrypoint = "main";
+    wf_frag_info.format = SDL_GPU_SHADERFORMAT_SPIRV;
+    wf_frag_info.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+
+    SDL_GPUShader* wf_frag = SDL_CreateGPUShader(device, &wf_frag_info);
+    free(wf_frag_code);
+
+    if (!wf_vert || !wf_frag) {
+        fprintf(stderr, "FAIL wireframe shaders: %s\n", SDL_GetError());
+        if (wf_vert) SDL_ReleaseGPUShader(device, wf_vert);
+        if (wf_frag) SDL_ReleaseGPUShader(device, wf_frag);
+        return false;
+    }
+
+    SDL_GPUColorTargetDescription wf_color_target = {};
+    wf_color_target.format = r->swapchain_format;
+
+    SDL_GPUVertexBufferDescription wf_vb_desc = {};
+    wf_vb_desc.slot = 0;
+    wf_vb_desc.pitch = 3 * sizeof(float);
+    wf_vb_desc.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+
+    SDL_GPUVertexAttribute wf_attr = {};
+    wf_attr.location = 0;
+    wf_attr.buffer_slot = 0;
+    wf_attr.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
+    wf_attr.offset = 0;
+
+    SDL_GPUGraphicsPipelineCreateInfo wf_pipeline_info = {};
+    wf_pipeline_info.vertex_shader = wf_vert;
+    wf_pipeline_info.fragment_shader = wf_frag;
+    wf_pipeline_info.primitive_type = SDL_GPU_PRIMITIVETYPE_LINELIST;
+    wf_pipeline_info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+    wf_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+    wf_pipeline_info.vertex_input_state.num_vertex_buffers = 1;
+    wf_pipeline_info.vertex_input_state.vertex_buffer_descriptions = &wf_vb_desc;
+    wf_pipeline_info.vertex_input_state.num_vertex_attributes = 1;
+    wf_pipeline_info.vertex_input_state.vertex_attributes = &wf_attr;
+    wf_pipeline_info.target_info.num_color_targets = 1;
+    wf_pipeline_info.target_info.color_target_descriptions = &wf_color_target;
+
+    r->wireframe_pipeline = SDL_CreateGPUGraphicsPipeline(device, &wf_pipeline_info);
+    SDL_ReleaseGPUShader(device, wf_vert);
+    SDL_ReleaseGPUShader(device, wf_frag);
+
+    if (!r->wireframe_pipeline) {
+        fprintf(stderr, "FAIL wireframe pipeline: %s\n", SDL_GetError());
+        return false;
+    }
+
+    // Upload cube geometry (unit cube centered at origin, ±0.5)
+    float cube_verts[8 * 3] = {
+        -0.5f, -0.5f, -0.5f,  // 0
+         0.5f, -0.5f, -0.5f,  // 1
+         0.5f,  0.5f, -0.5f,  // 2
+        -0.5f,  0.5f, -0.5f,  // 3
+        -0.5f, -0.5f,  0.5f,  // 4
+         0.5f, -0.5f,  0.5f,  // 5
+         0.5f,  0.5f,  0.5f,  // 6
+        -0.5f,  0.5f,  0.5f,  // 7
+    };
+    uint16_t cube_indices[24] = {
+        0,1, 1,2, 2,3, 3,0,  // back face
+        4,5, 5,6, 6,7, 7,4,  // front face
+        0,4, 1,5, 2,6, 3,7,  // connecting edges
+    };
+
+    uint32_t vb_size = sizeof(cube_verts);
+    uint32_t ib_size = sizeof(cube_indices);
+
+    SDL_GPUBufferCreateInfo cube_vb_info = {};
+    cube_vb_info.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
+    cube_vb_info.size = vb_size;
+    r->cube_vertex_buffer = SDL_CreateGPUBuffer(device, &cube_vb_info);
+
+    SDL_GPUBufferCreateInfo cube_ib_info = {};
+    cube_ib_info.usage = SDL_GPU_BUFFERUSAGE_INDEX;
+    cube_ib_info.size = ib_size;
+    r->cube_index_buffer = SDL_CreateGPUBuffer(device, &cube_ib_info);
+
+    SDL_GPUTransferBufferCreateInfo cube_xfer_info = {};
+    cube_xfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    cube_xfer_info.size = vb_size + ib_size;
+    SDL_GPUTransferBuffer* cube_xfer = SDL_CreateGPUTransferBuffer(device, &cube_xfer_info);
+
+    void* cube_map = SDL_MapGPUTransferBuffer(device, cube_xfer, false);
+    memcpy(cube_map, cube_verts, vb_size);
+    memcpy((uint8_t*)cube_map + vb_size, cube_indices, ib_size);
+    SDL_UnmapGPUTransferBuffer(device, cube_xfer);
+
+    SDL_GPUCommandBuffer* cube_cmd = SDL_AcquireGPUCommandBuffer(device);
+    SDL_GPUCopyPass* cube_copy = SDL_BeginGPUCopyPass(cube_cmd);
+
+    SDL_GPUTransferBufferLocation cube_src = {};
+    cube_src.transfer_buffer = cube_xfer;
+    cube_src.offset = 0;
+    SDL_GPUBufferRegion cube_vb_dst = {};
+    cube_vb_dst.buffer = r->cube_vertex_buffer;
+    cube_vb_dst.size = vb_size;
+    SDL_UploadToGPUBuffer(cube_copy, &cube_src, &cube_vb_dst, false);
+
+    cube_src.offset = vb_size;
+    SDL_GPUBufferRegion cube_ib_dst = {};
+    cube_ib_dst.buffer = r->cube_index_buffer;
+    cube_ib_dst.size = ib_size;
+    SDL_UploadToGPUBuffer(cube_copy, &cube_src, &cube_ib_dst, false);
+
+    SDL_EndGPUCopyPass(cube_copy);
+    SDL_SubmitGPUCommandBuffer(cube_cmd);
+    SDL_WaitForGPUIdle(device);
+    SDL_ReleaseGPUTransferBuffer(device, cube_xfer);
+
     fprintf(stderr, "Renderer init OK\n");
     return true;
 }
@@ -248,7 +384,28 @@ void renderer_upload_gaussians(Renderer* r, const GaussianScene* scene) {
     fprintf(stderr, "Uploaded %u gaussians\n", scene->gaussian_count);
 }
 
-void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUniforms* cam, const OverlayParams* overlay) {
+// Multiply two column-major 4x4 matrices: out = a * b
+static void mat4_mul(const float* a, const float* b, float* out) {
+    for (int c = 0; c < 4; c++) {
+        for (int r = 0; r < 4; r++) {
+            out[c*4+r] = a[0*4+r]*b[c*4+0] + a[1*4+r]*b[c*4+1] + a[2*4+r]*b[c*4+2] + a[3*4+r]*b[c*4+3];
+        }
+    }
+}
+
+// Build a column-major translation+scale model matrix
+static void mat4_translate_scale(float tx, float ty, float tz, float s, float* out) {
+    memset(out, 0, 16 * sizeof(float));
+    out[0]  = s;
+    out[5]  = s;
+    out[10] = s;
+    out[12] = tx;
+    out[13] = ty;
+    out[14] = tz;
+    out[15] = 1.0f;
+}
+
+void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUniforms* cam, const OverlayParams* overlay, const NodeRenderParams* nodes) {
     // Get current frame's transfer buffer and fence
     uint32_t buf_idx = r->current_frame % MAX_FRAMES_IN_FLIGHT;
     SDL_GPUTransferBuffer* transfer_buf = r->transfer_bufs[buf_idx];
@@ -360,6 +517,56 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
         SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
     }
 
+    // Wireframe node cubes (rendered over overlay so they're always visible)
+    if (nodes && nodes->count > 0 && r->wireframe_pipeline) {
+        SDL_BindGPUGraphicsPipeline(pass, r->wireframe_pipeline);
+
+        SDL_GPUBufferBinding vb_bind = {};
+        vb_bind.buffer = r->cube_vertex_buffer;
+        SDL_BindGPUVertexBuffers(pass, 0, &vb_bind, 1);
+
+        SDL_GPUBufferBinding ib_bind = {};
+        ib_bind.buffer = r->cube_index_buffer;
+        SDL_BindGPUIndexBuffer(pass, &ib_bind, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+
+        // Precompute view-projection.
+        // The camera's view matrix has X-axis flipped (right = forward × up instead of
+        // up × forward). The splat shader compensates via manual projection, but for
+        // standard MVP we need to undo the flip by negating VP column 0.
+        // Correct the view matrix by negating row 0 (the flipped right vector).
+        // Row 0 in column-major is at indices [0], [4], [8], [12].
+        float view_corrected[16];
+        memcpy(view_corrected, cam->view, sizeof(view_corrected));
+        view_corrected[0]  = -view_corrected[0];
+        view_corrected[4]  = -view_corrected[4];
+        view_corrected[8]  = -view_corrected[8];
+        view_corrected[12] = -view_corrected[12];
+        float vp[16];
+        mat4_mul(cam->proj, view_corrected, vp);
+
+        float scale = nodes->half_size * 2.0f; // cube verts are ±0.5, so scale by full size
+
+        for (uint32_t i = 0; i < nodes->count; i++) {
+            const float* p = &nodes->positions[i * 3];
+
+            float model[16];
+            mat4_translate_scale(p[0], p[1], p[2], scale, model);
+
+            float mvp[16];
+            mat4_mul(vp, model, mvp);
+
+            struct { float mvp[16]; float color[4]; } uniforms;
+            memcpy(uniforms.mvp, mvp, sizeof(mvp));
+            uniforms.color[0] = 0.0f;
+            uniforms.color[1] = 1.0f;
+            uniforms.color[2] = 1.0f;
+            uniforms.color[3] = 1.0f;
+
+            SDL_PushGPUVertexUniformData(cmd, 0, &uniforms, sizeof(uniforms));
+            SDL_DrawGPUIndexedPrimitives(pass, 24, 1, 0, 0, 0);
+        }
+    }
+
     // ImGui
     ImGui_ImplSDLGPU3_RenderDrawData(ImGui::GetDrawData(), cmd, pass);
 
@@ -381,8 +588,11 @@ void renderer_destroy(Renderer* r) {
     
     if (r->splat_pipeline) SDL_ReleaseGPUGraphicsPipeline(r->device, r->splat_pipeline);
     if (r->overlay_pipeline) SDL_ReleaseGPUGraphicsPipeline(r->device, r->overlay_pipeline);
+    if (r->wireframe_pipeline) SDL_ReleaseGPUGraphicsPipeline(r->device, r->wireframe_pipeline);
     if (r->overlay_sampler) SDL_ReleaseGPUSampler(r->device, r->overlay_sampler);
     if (r->gaussian_buffer) SDL_ReleaseGPUBuffer(r->device, r->gaussian_buffer);
+    if (r->cube_vertex_buffer) SDL_ReleaseGPUBuffer(r->device, r->cube_vertex_buffer);
+    if (r->cube_index_buffer) SDL_ReleaseGPUBuffer(r->device, r->cube_index_buffer);
     if (r->index_buffer) SDL_ReleaseGPUBuffer(r->device, r->index_buffer);
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         if (r->transfer_bufs[i]) SDL_ReleaseGPUTransferBuffer(r->device, r->transfer_bufs[i]);
