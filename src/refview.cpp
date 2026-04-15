@@ -52,8 +52,8 @@ bool refview_load(RefViewSet* set, const char* colmap_dir) {
     memset(set, 0, sizeof(*set));
     set->selected = -1;
     set->current_node = -1;
-    set->lerp_duration = 1.5f;
-    set->neighbor_radius = 2.0f;
+    set->lerp_speed = 2.0f;
+    set->neighbor_radius = 5.5f;
 
     // Build path to images.txt
     char images_txt[512];

@@ -9,7 +9,7 @@ void camera_init(Camera* cam) {
     cam->position[2] = 0.0f;
     cam->yaw = 0.0f;
     cam->pitch = 0.0f;
-    cam->fov_y = 60.0f * (3.14159265358979f / 180.0f);
+    cam->fov_y = 90.0f * (3.14159265358979f / 180.0f);
     cam->near_plane = 0.1f;
     cam->far_plane = 100.0f;
     cam->move_speed = 2.0f;

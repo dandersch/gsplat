@@ -93,8 +93,8 @@ int main(int argc, char* argv[]) {
     uint64_t last_time = SDL_GetPerformanceCounter();
     uint64_t freq = SDL_GetPerformanceFrequency();
     bool running = true;
-    float refview_max_alpha = 1.0f;
-    float node_half_size = 0.15f;
+    float refview_max_alpha = 0.5f;
+    float node_half_size = 0.5f;
     int frame_num = 0;
 
     // Neighbor scratch buffers
@@ -176,9 +176,15 @@ int main(int argc, char* argv[]) {
 
                     if (best_hit >= 0) {
                         uint32_t view_idx = neighbor_indices[best_hit];
+                        RefView* tv = &refviews.views[view_idx];
+                        float dx = tv->position[0] - cam.position[0];
+                        float dy = tv->position[1] - cam.position[1];
+                        float dz = tv->position[2] - cam.position[2];
+                        float dist = sqrtf(dx*dx + dy*dy + dz*dz);
                         refviews.selected = (int32_t)view_idx;
                         refviews.lerping = true;
                         refviews.lerp_t = 0.0f;
+                        refviews.lerp_duration = (dist > 1e-6f) ? dist / refviews.lerp_speed : 0.1f;
                         refviews.start_pos[0] = cam.position[0];
                         refviews.start_pos[1] = cam.position[1];
                         refviews.start_pos[2] = cam.position[2];
@@ -265,7 +271,8 @@ int main(int argc, char* argv[]) {
         if (refviews_loaded) {
             ImGui::SliderFloat("Ref View Opacity", &refview_max_alpha, 0.0f, 1.0f);
             ImGui::SliderFloat("Neighbor Radius", &refviews.neighbor_radius, 0.5f, 10.0f);
-            ImGui::SliderFloat("Node Box Size", &node_half_size, 0.05f, 0.5f);
+            ImGui::SliderFloat("Node Box Size", &node_half_size, 0.1f, 1.0f);
+            ImGui::SliderFloat("Transition Speed", &refviews.lerp_speed, 1.0f, 10.0f);
             if (refviews.current_node >= 0) {
                 ImGui::Text("Current Node: %d", refviews.current_node);
                 ImGui::Text("Neighbors: %u", neighbor_count);
@@ -280,9 +287,15 @@ int main(int argc, char* argv[]) {
                 snprintf(label, sizeof(label), "%u", i);
                 bool is_selected = ((int32_t)i == refviews.selected);
                 if (ImGui::Selectable(label, is_selected)) {
+                    RefView* tv = &refviews.views[i];
+                    float dx = tv->position[0] - cam.position[0];
+                    float dy = tv->position[1] - cam.position[1];
+                    float dz = tv->position[2] - cam.position[2];
+                    float dist = sqrtf(dx*dx + dy*dy + dz*dz);
                     refviews.selected = i;
                     refviews.lerping = true;
                     refviews.lerp_t = 0.0f;
+                    refviews.lerp_duration = (dist > 1e-6f) ? dist / refviews.lerp_speed : 0.1f;
                     refviews.start_pos[0] = cam.position[0];
                     refviews.start_pos[1] = cam.position[1];
                     refviews.start_pos[2] = cam.position[2];

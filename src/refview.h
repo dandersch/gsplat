@@ -22,7 +22,8 @@ struct RefViewSet {
     // lerp state
     bool     lerping;
     float    lerp_t;
-    float    lerp_duration;
+    float    lerp_duration;    // computed per-transition from distance / speed
+    float    lerp_speed;       // world units per second
     float    start_pos[3];
     float    start_yaw, start_pitch;
 
