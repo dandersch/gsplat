@@ -208,9 +208,9 @@ int main(int argc, char* argv[]) {
         // Update reference view interpolation (locks camera input while active)
         bool camera_locked = refview_update(&refviews, &cam, dt);
 
-        // Update camera
+        // Update camera (allow mouse look during lerp, but block WASD movement)
         if (camera_locked) {
-            // do nothing, refview_update drives the camera
+            camera_update(&cam, keys, mouse_dx, mouse_dy, 0);
         } else if (cam.camera_mode || !ImGui::GetIO().WantCaptureKeyboard) {
             camera_update(&cam, keys, mouse_dx, mouse_dy, dt);
         } else {
