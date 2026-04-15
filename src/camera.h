@@ -11,7 +11,7 @@ struct Camera {
     float far_plane;
     float move_speed;
     float look_sensitivity;
-    bool  right_mouse_held;
+    bool  camera_mode;
 };
 
 struct CameraUniforms {

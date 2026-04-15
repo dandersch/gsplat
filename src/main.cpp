@@ -87,6 +87,7 @@ int main(int argc, char* argv[]) {
     // Camera
     Camera cam;
     camera_init(&cam);
+    SDL_SetWindowRelativeMouseMode(window, true); // start in camera mode
 
     bool keys[7] = {}; // W A S D Space LCtrl LShift
     uint64_t last_time = SDL_GetPerformanceCounter();
@@ -134,51 +135,14 @@ int main(int argc, char* argv[]) {
             }
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
                 if (ev.button.button == SDL_BUTTON_RIGHT) {
-                    cam.right_mouse_held = true;
-                    SDL_SetWindowRelativeMouseMode(window, true);
+                    cam.camera_mode = !cam.camera_mode;
+                    SDL_SetWindowRelativeMouseMode(window, cam.camera_mode);
                 }
-                if (ev.button.button == SDL_BUTTON_LEFT && refviews_loaded &&
-                    !ImGui::GetIO().WantCaptureMouse && !refviews.lerping) {
-                    // Ray-AABB intersection against neighbor nodes
-                    int w, h;
-                    SDL_GetWindowSize(window, &w, &h);
-                    float mx = ev.button.x;
-                    float my = ev.button.y;
-                    // NDC
-                    float ndc_x = (2.0f * mx / (float)w) - 1.0f;
-                    float ndc_y = 1.0f - (2.0f * my / (float)h); // Vulkan Y-flip
-
-                    // Unproject ray direction: inv(proj) then inv(view)
-                    float tan_half_fov = tanf(cam.fov_y * 0.5f);
-                    float aspect = (float)w / (float)h;
-                    // Camera-space ray direction (Vulkan proj has -f for Y)
-                    float ray_cam[3] = {
-                        ndc_x * tan_half_fov * aspect,
-                        ndc_y * tan_half_fov,
-                        1.0f // forward is +Z in camera space (view matrix maps forward to -Z, but we want world direction)
-                    };
-                    // Transform to world space using camera basis vectors
-                    float forward[3], right[3], up[3];
+                if (ev.button.button == SDL_BUTTON_LEFT && cam.camera_mode &&
+                    refviews_loaded && !refviews.lerping) {
+                    // Ray from screen center (crosshair) into scene
+                    float forward[3];
                     camera_get_forward(&cam, forward);
-                    float world_up[3] = {0, 1, 0};
-                    // camera.cpp computes right = forward × world_up, which points LEFT.
-                    // We need actual right = world_up × forward for correct ray unprojection.
-                    right[0] = world_up[1]*forward[2] - world_up[2]*forward[1];
-                    right[1] = world_up[2]*forward[0] - world_up[0]*forward[2];
-                    right[2] = world_up[0]*forward[1] - world_up[1]*forward[0];
-                    float rlen = sqrtf(right[0]*right[0]+right[1]*right[1]+right[2]*right[2]);
-                    if (rlen > 1e-8f) { right[0]/=rlen; right[1]/=rlen; right[2]/=rlen; }
-                    up[0] = right[1]*forward[2] - right[2]*forward[1];
-                    up[1] = right[2]*forward[0] - right[0]*forward[2];
-                    up[2] = right[0]*forward[1] - right[1]*forward[0];
-
-                    float ray_dir[3] = {
-                        ray_cam[0]*right[0] + ray_cam[1]*up[0] + ray_cam[2]*forward[0],
-                        ray_cam[0]*right[1] + ray_cam[1]*up[1] + ray_cam[2]*forward[1],
-                        ray_cam[0]*right[2] + ray_cam[1]*up[2] + ray_cam[2]*forward[2],
-                    };
-                    float dlen = sqrtf(ray_dir[0]*ray_dir[0]+ray_dir[1]*ray_dir[1]+ray_dir[2]*ray_dir[2]);
-                    ray_dir[0]/=dlen; ray_dir[1]/=dlen; ray_dir[2]/=dlen;
 
                     // Test against all neighbor AABBs, pick closest hit
                     float best_t = 1e30f;
@@ -190,7 +154,7 @@ int main(int argc, char* argv[]) {
                         float tmin = -1e30f, tmax = 1e30f;
                         for (int axis = 0; axis < 3; axis++) {
                             float o = cam.position[axis];
-                            float d = ray_dir[axis];
+                            float d = forward[axis];
                             float bmin = center[axis] - hs;
                             float bmax = center[axis] + hs;
                             if (fabsf(d) < 1e-8f) {
@@ -224,13 +188,9 @@ int main(int argc, char* argv[]) {
                 }
                 break;
             case SDL_EVENT_MOUSE_BUTTON_UP:
-                if (ev.button.button == SDL_BUTTON_RIGHT) {
-                    cam.right_mouse_held = false;
-                    SDL_SetWindowRelativeMouseMode(window, false);
-                }
                 break;
             case SDL_EVENT_MOUSE_MOTION:
-                if (cam.right_mouse_held && !ImGui::GetIO().WantCaptureMouse) {
+                if (cam.camera_mode) {
                     mouse_dx += ev.motion.xrel;
                     mouse_dy += ev.motion.yrel;
                 }
@@ -248,10 +208,10 @@ int main(int argc, char* argv[]) {
         // Update reference view interpolation (locks camera input while active)
         bool camera_locked = refview_update(&refviews, &cam, dt);
 
-        // Update camera (skip if ImGui wants keyboard or camera is locked)
+        // Update camera
         if (camera_locked) {
             // do nothing, refview_update drives the camera
-        } else if (!ImGui::GetIO().WantCaptureKeyboard) {
+        } else if (cam.camera_mode || !ImGui::GetIO().WantCaptureKeyboard) {
             camera_update(&cam, keys, mouse_dx, mouse_dy, dt);
         } else {
             camera_update(&cam, keys, mouse_dx, mouse_dy, 0);
@@ -331,6 +291,13 @@ int main(int argc, char* argv[]) {
                 }
             }
             ImGui::End();
+        }
+
+        // Draw crosshair in camera mode
+        if (cam.camera_mode) {
+            ImDrawList* dl = ImGui::GetForegroundDrawList();
+            ImVec2 center(win_w * 0.5f, win_h * 0.5f);
+            dl->AddCircleFilled(center, 3.0f, IM_COL32(255, 255, 255, 200));
         }
 
         ImGui::Render();

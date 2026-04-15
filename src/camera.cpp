@@ -14,7 +14,7 @@ void camera_init(Camera* cam) {
     cam->far_plane = 100.0f;
     cam->move_speed = 2.0f;
     cam->look_sensitivity = 0.003f;
-    cam->right_mouse_held = false;
+    cam->camera_mode = true;
 }
 
 void camera_get_forward(const Camera* cam, float* out) {
@@ -65,7 +65,7 @@ static void normalize3(float* v) {
 
 void camera_update(Camera* cam, const bool* keys, float dx, float dy, float dt) {
     // keys: 0=W, 1=A, 2=S, 3=D, 4=Space, 5=LCtrl, 6=LShift
-    if (cam->right_mouse_held) {
+    if (cam->camera_mode) {
         cam->yaw   += dx * cam->look_sensitivity;
         cam->pitch += dy * cam->look_sensitivity;
         float limit = 3.14159265358979f * 0.5f - 0.01f;
