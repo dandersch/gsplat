@@ -293,11 +293,42 @@ int main(int argc, char* argv[]) {
             ImGui::End();
         }
 
-        // Draw crosshair in camera mode
+        // Draw crosshair in camera mode (highlight when aiming at a node)
         if (cam.camera_mode) {
+            bool crosshair_hover = false;
+            if (refviews_loaded && !refviews.lerping && neighbor_count > 0) {
+                float forward[3];
+                camera_get_forward(&cam, forward);
+                for (uint32_t ni = 0; ni < neighbor_count; ni++) {
+                    const float* c = &neighbor_positions[ni*3];
+                    float hs = node_half_size;
+                    float tmin = -1e30f, tmax = 1e30f;
+                    for (int axis = 0; axis < 3; axis++) {
+                        float o = cam.position[axis];
+                        float d = forward[axis];
+                        float bmin = c[axis] - hs, bmax = c[axis] + hs;
+                        if (fabsf(d) < 1e-8f) {
+                            if (o < bmin || o > bmax) { tmin = 1e30f; break; }
+                        } else {
+                            float t1 = (bmin - o) / d, t2 = (bmax - o) / d;
+                            if (t1 > t2) { float tmp = t1; t1 = t2; t2 = tmp; }
+                            if (t1 > tmin) tmin = t1;
+                            if (t2 < tmax) tmax = t2;
+                            if (tmin > tmax) { tmin = 1e30f; break; }
+                        }
+                    }
+                    if (tmax > 0.0f && tmin < 1e30f) { crosshair_hover = true; break; }
+                }
+            }
+
             ImDrawList* dl = ImGui::GetForegroundDrawList();
             ImVec2 center(win_w * 0.5f, win_h * 0.5f);
-            dl->AddCircleFilled(center, 3.0f, IM_COL32(255, 255, 255, 200));
+            if (crosshair_hover) {
+                dl->AddCircleFilled(center, 5.0f, IM_COL32(0, 200, 255, 240));
+                dl->AddCircle(center, 8.0f, IM_COL32(0, 200, 255, 120), 0, 1.5f);
+            } else {
+                dl->AddCircleFilled(center, 3.0f, IM_COL32(255, 255, 255, 200));
+            }
         }
 
         ImGui::Render();
