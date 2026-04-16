@@ -3,7 +3,7 @@ set -e
 
 CXX="${CXX:-g++}"
 CXXFLAGS="-O2 -std=c++17 -Wall -Wextra -Wno-missing-field-initializers"
-LDFLAGS="-lSDL3 -lm"
+LDFLAGS="-lSDL3 -lsqlite3 -lm"
 OUT="gsplat"
 
 IMGUI_DIR="third_party/imgui"

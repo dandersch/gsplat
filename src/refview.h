@@ -5,11 +5,17 @@
 
 struct RefView {
     char    image_name[256];
+    int     colmap_id;         // original IMAGE_ID from colmap
     float   position[3];       // world-space camera center (-R^T * T)
     float   rotation[4];       // quaternion (w,x,y,z) from colmap
     float   yaw, pitch;        // derived from rotation for lerp target
     SDL_GPUTexture* texture;   // NULL until image loaded
     int     width, height;
+};
+
+struct CovisEdge {
+    uint32_t idx_a, idx_b;     // internal RefView indices
+    uint32_t inliers;          // geometrically verified inlier matches
 };
 
 struct RefViewSet {
@@ -29,10 +35,20 @@ struct RefViewSet {
 
     // neighbor discovery
     float    neighbor_radius;  // only show nodes within this distance of current_node
+
+    // covisibility graph (from colmap database.db)
+    CovisEdge* covis_edges;
+    uint32_t   covis_edge_count;
+    int        min_inliers;        // threshold: minimum inlier count to consider connected
+    bool       use_covisibility;   // true = covis graph, false = distance-based
 };
 
 // Parse colmap images.txt from colmap_dir. Derives image_dir as ../../images/ relative to colmap_dir.
 bool refview_load(RefViewSet* set, const char* colmap_dir);
+
+// Load covisibility graph from colmap database.db. Call after refview_load.
+// Falls back to distance-based neighbors if db not found.
+void refview_load_covisibility(RefViewSet* set, const char* colmap_dir);
 
 // Load images as GPU textures. Call after refview_load.
 void refview_load_images(RefViewSet* set, SDL_GPUDevice* device);

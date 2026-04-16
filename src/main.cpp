@@ -80,6 +80,7 @@ int main(int argc, char* argv[]) {
     if (colmap_dir) {
         refviews_loaded = refview_load(&refviews, colmap_dir);
         if (refviews_loaded) {
+            refview_load_covisibility(&refviews, colmap_dir);
             refview_load_images(&refviews, device);
         }
     }
@@ -270,7 +271,12 @@ int main(int argc, char* argv[]) {
         }
         if (refviews_loaded) {
             ImGui::SliderFloat("Ref View Opacity", &refview_max_alpha, 0.0f, 1.0f);
-            ImGui::SliderFloat("Neighbor Radius", &refviews.neighbor_radius, 0.5f, 10.0f);
+            ImGui::Checkbox("Use Covisibility", &refviews.use_covisibility);
+            if (refviews.use_covisibility) {
+                ImGui::SliderInt("Min Inliers", &refviews.min_inliers, 0, 500);
+            } else {
+                ImGui::SliderFloat("Neighbor Radius", &refviews.neighbor_radius, 0.5f, 10.0f);
+            }
             ImGui::SliderFloat("Node Box Size", &node_half_size, 0.1f, 1.0f);
             ImGui::SliderFloat("Transition Speed", &refviews.lerp_speed, 1.0f, 10.0f);
             if (refviews.current_node >= 0) {

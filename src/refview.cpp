@@ -1,5 +1,6 @@
 #include "refview.h"
 #include <SDL3/SDL.h>
+#include <sqlite3.h>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -54,6 +55,8 @@ bool refview_load(RefViewSet* set, const char* colmap_dir) {
     set->current_node = -1;
     set->lerp_speed = 2.0f;
     set->neighbor_radius = 5.5f;
+    set->min_inliers = 50;
+    set->use_covisibility = false;
 
     // Build path to images.txt
     char images_txt[512];
@@ -108,6 +111,7 @@ bool refview_load(RefViewSet* set, const char* colmap_dir) {
         }
 
         RefView* v = &set->views[idx];
+        v->colmap_id = image_id;
         strncpy(v->image_name, name, sizeof(v->image_name) - 1);
         v->rotation[0] = qw;
         v->rotation[1] = qx;
@@ -126,6 +130,76 @@ bool refview_load(RefViewSet* set, const char* colmap_dir) {
 
     SDL_Log("RefView: Loaded %u camera nodes from %s", set->count, images_txt);
     return true;
+}
+
+void refview_load_covisibility(RefViewSet* set, const char* colmap_dir) {
+    char db_path[512];
+    snprintf(db_path, sizeof(db_path), "%s/../../database/database.db", colmap_dir);
+
+    sqlite3* db = NULL;
+    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        SDL_Log("RefView: Could not open %s (%s), using distance-based neighbors",
+                db_path, db ? sqlite3_errmsg(db) : "unknown error");
+        if (db) sqlite3_close(db);
+        return;
+    }
+
+    // Build map from colmap image_id -> internal index
+    int max_colmap_id = 0;
+    for (uint32_t i = 0; i < set->count; i++) {
+        if (set->views[i].colmap_id > max_colmap_id)
+            max_colmap_id = set->views[i].colmap_id;
+    }
+    int* id_to_idx = (int*)malloc((max_colmap_id + 1) * sizeof(int));
+    memset(id_to_idx, -1, (max_colmap_id + 1) * sizeof(int));
+    for (uint32_t i = 0; i < set->count; i++) {
+        id_to_idx[set->views[i].colmap_id] = (int)i;
+    }
+
+    // Query verified pairs
+    const char* sql = "SELECT pair_id, rows FROM two_view_geometries WHERE config = 2 AND rows > 0";
+    sqlite3_stmt* stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        SDL_Log("RefView: SQL error: %s", sqlite3_errmsg(db));
+        free(id_to_idx);
+        sqlite3_close(db);
+        return;
+    }
+
+    // First pass: count edges
+    uint32_t edge_cap = 64;
+    uint32_t edge_count = 0;
+    CovisEdge* edges = (CovisEdge*)malloc(edge_cap * sizeof(CovisEdge));
+
+    const int64_t MAX_ID = 2147483647LL;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        int64_t pair_id = sqlite3_column_int64(stmt, 0);
+        int inliers = sqlite3_column_int(stmt, 1);
+
+        int id1 = (int)(pair_id / MAX_ID);
+        int id2 = (int)(pair_id % MAX_ID);
+
+        if (id1 < 0 || id1 > max_colmap_id || id2 < 0 || id2 > max_colmap_id) continue;
+        int idx1 = id_to_idx[id1];
+        int idx2 = id_to_idx[id2];
+        if (idx1 < 0 || idx2 < 0) continue;
+
+        if (edge_count == edge_cap) {
+            edge_cap *= 2;
+            edges = (CovisEdge*)realloc(edges, edge_cap * sizeof(CovisEdge));
+        }
+        edges[edge_count++] = { (uint32_t)idx1, (uint32_t)idx2, (uint32_t)inliers };
+    }
+
+    sqlite3_finalize(stmt);
+    sqlite3_close(db);
+    free(id_to_idx);
+
+    set->covis_edges = edges;
+    set->covis_edge_count = edge_count;
+    set->use_covisibility = true;
+
+    SDL_Log("RefView: Loaded %u covisibility edges from %s", edge_count, db_path);
 }
 
 struct ImageLoadTask {
@@ -279,32 +353,45 @@ bool refview_update(RefViewSet* set, Camera* cam, float dt) {
     return true;
 }
 
-// TODO: For better neighbor connectivity, consider using actual colmap covisibility data
-// instead of a simple distance heuristic. Options:
-//   (a) Read colmap's database.db (SQLite) which stores an explicit covisibility graph.
-//   (b) Parse the POINTS2D lines in images.txt (currently skipped by skip_line()) — each
-//       line has (X, Y, POINT3D_ID) entries. Two images sharing enough POINT3D_IDs are
-//       covisible. Build adjacency from set intersection counts with a threshold.
-// For now, distance-based neighbor discovery is a reasonable approximation.
 uint32_t refview_get_neighbors(const RefViewSet* set, float* out_positions, uint32_t* out_indices, uint32_t max_count) {
     if (set->current_node < 0 || set->current_node >= (int32_t)set->count) return 0;
 
-    const RefView* current = &set->views[set->current_node];
-    float radius2 = set->neighbor_radius * set->neighbor_radius;
     uint32_t n = 0;
 
-    for (uint32_t i = 0; i < set->count && n < max_count; i++) {
-        if ((int32_t)i == set->current_node) continue;
-        float dx = set->views[i].position[0] - current->position[0];
-        float dy = set->views[i].position[1] - current->position[1];
-        float dz = set->views[i].position[2] - current->position[2];
-        float d2 = dx*dx + dy*dy + dz*dz;
-        if (d2 <= radius2) {
-            out_positions[n * 3 + 0] = set->views[i].position[0];
-            out_positions[n * 3 + 1] = set->views[i].position[1];
-            out_positions[n * 3 + 2] = set->views[i].position[2];
-            out_indices[n] = i;
+    if (set->use_covisibility) {
+        // Covisibility-based: walk edges, return neighbors of current_node above threshold
+        uint32_t cur = (uint32_t)set->current_node;
+        for (uint32_t e = 0; e < set->covis_edge_count && n < max_count; e++) {
+            const CovisEdge* edge = &set->covis_edges[e];
+            if ((int)edge->inliers < set->min_inliers) continue;
+            uint32_t other = UINT32_MAX;
+            if (edge->idx_a == cur) other = edge->idx_b;
+            else if (edge->idx_b == cur) other = edge->idx_a;
+            if (other == UINT32_MAX) continue;
+
+            out_positions[n * 3 + 0] = set->views[other].position[0];
+            out_positions[n * 3 + 1] = set->views[other].position[1];
+            out_positions[n * 3 + 2] = set->views[other].position[2];
+            out_indices[n] = other;
             n++;
+        }
+    } else {
+        // Distance-based fallback
+        const RefView* current = &set->views[set->current_node];
+        float radius2 = set->neighbor_radius * set->neighbor_radius;
+        for (uint32_t i = 0; i < set->count && n < max_count; i++) {
+            if ((int32_t)i == set->current_node) continue;
+            float dx = set->views[i].position[0] - current->position[0];
+            float dy = set->views[i].position[1] - current->position[1];
+            float dz = set->views[i].position[2] - current->position[2];
+            float d2 = dx*dx + dy*dy + dz*dz;
+            if (d2 <= radius2) {
+                out_positions[n * 3 + 0] = set->views[i].position[0];
+                out_positions[n * 3 + 1] = set->views[i].position[1];
+                out_positions[n * 3 + 2] = set->views[i].position[2];
+                out_indices[n] = i;
+                n++;
+            }
         }
     }
     return n;
@@ -344,6 +431,7 @@ void refview_get_rotation_matrix(const RefView* v, float* m) {
 
 void refview_free(RefViewSet* set) {
     free(set->views);
+    free(set->covis_edges);
     memset(set, 0, sizeof(*set));
     set->selected = -1;
 }
