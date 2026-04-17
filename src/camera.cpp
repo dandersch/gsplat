@@ -15,6 +15,8 @@ void camera_init(Camera* cam) {
     cam->move_speed = 2.0f;
     cam->look_sensitivity = 0.003f;
     cam->camera_mode = true;
+    cam->orthographic = false;
+    cam->ortho_size = 1.0f;
 }
 
 void camera_get_forward(const Camera* cam, float* out) {
@@ -143,16 +145,27 @@ void camera_get_view_matrix(const Camera* cam, float* m) {
     m[15] = 1;
 }
 
-// Perspective projection: column-major, Vulkan clip space (Y-flip, Z [0,1])
+// Projection: column-major, Vulkan clip space (Y-flip, Z [0,1])
 void camera_get_proj_matrix(const Camera* cam, float aspect, float* m) {
-    float f = 1.0f / tanf(cam->fov_y * 0.5f);
     float n = cam->near_plane;
     float fa = cam->far_plane;
 
     memset(m, 0, 16 * sizeof(float));
-    m[0]  = f / aspect;
-    m[5]  = -f;  // Vulkan Y-flip
-    m[10] = fa / (n - fa);
-    m[11] = -1.0f;
-    m[14] = (n * fa) / (n - fa);
+
+    if (cam->orthographic) {
+        float half_h = cam->ortho_size;
+        float half_w = half_h * aspect;
+        m[0]  = 1.0f / half_w;
+        m[5]  = -1.0f / half_h;  // Vulkan Y-flip
+        m[10] = 1.0f / (n - fa);
+        m[14] = n / (n - fa);
+        m[15] = 1.0f;
+    } else {
+        float f = 1.0f / tanf(cam->fov_y * 0.5f);
+        m[0]  = f / aspect;
+        m[5]  = -f;  // Vulkan Y-flip
+        m[10] = fa / (n - fa);
+        m[11] = -1.0f;
+        m[14] = (n * fa) / (n - fa);
+    }
 }

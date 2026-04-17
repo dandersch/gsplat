@@ -15,6 +15,7 @@ layout(set = 1, binding = 0) uniform CameraUBO {
     mat4 view;
     mat4 proj;
     vec2 viewport;
+    float orthographic; // ORTHO: 1.0 = orthographic, 0.0 = perspective
 };
 
 layout(location = 0) out vec3 frag_color;
@@ -76,12 +77,23 @@ void main() {
     float fy = abs(proj[1][1]) * viewport.y * 0.5;
 
     // 7. Jacobian of the screen-space projection at t
-    // px = fx * tx / tz + cx
-    // py = cy - fy * ty / tz   (Y-flip for Vulkan screen coords)
-    float J00 = fx / t.z;
-    float J11 = -fy / t.z;
-    float J02 = -fx * t.x / (t.z * t.z);
-    float J12 = fy * t.y / (t.z * t.z);
+    // ORTHO BEGIN: orthographic has no depth-dependent terms
+    float J00, J11, J02, J12;
+    if (orthographic > 0.5) {
+        // Orthographic: no 1/z foreshortening. Signs negated vs naive formula
+        // because perspective implicitly negates via division by negative t.z.
+        J00 = -fx;
+        J11 = fy;
+        J02 = 0.0;
+        J12 = 0.0;
+    } else {
+        // Perspective: px = fx * tx / tz + cx, py = cy - fy * ty / tz
+        J00 = fx / t.z;
+        J11 = -fy / t.z;
+        J02 = -fx * t.x / (t.z * t.z);
+        J12 = fy * t.y / (t.z * t.z);
+    }
+    // ORTHO END
 
     // 8. View rotation (upper-left 3x3 of view matrix)
     mat3 W = mat3(view);
@@ -109,11 +121,21 @@ void main() {
     vec3 conic = vec3(c / det, -b / det, a / det);
 
     // 12. Compute screen-space center
-    // In Vulkan/SDL_GPU, Y=0 is at top, so we need to flip Y
-    vec2 center_px = vec2(
-        fx * t.x / t.z + viewport.x * 0.5,
-        viewport.y * 0.5 - fy * t.y / t.z  // Flip Y for screen coords
-    );
+    // ORTHO BEGIN: orthographic has no perspective division for center
+    vec2 center_px;
+    if (orthographic > 0.5) {
+        // Signs negated: perspective divides by negative t.z which flips both axes
+        center_px = vec2(
+            -fx * t.x + viewport.x * 0.5,
+            viewport.y * 0.5 + fy * t.y
+        );
+    } else {
+        center_px = vec2(
+            fx * t.x / t.z + viewport.x * 0.5,
+            viewport.y * 0.5 - fy * t.y / t.z
+        );
+    }
+    // ORTHO END
 
     // 13. Compute quad radius (3 sigma)
     float radius_x = ceil(3.0 * sqrt(a));

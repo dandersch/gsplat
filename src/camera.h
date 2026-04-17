@@ -12,13 +12,16 @@ struct Camera {
     float move_speed;
     float look_sensitivity;
     bool  camera_mode;
+    bool  orthographic;
+    float ortho_size;
 };
 
 struct CameraUniforms {
     float view[16];
     float proj[16];
     float viewport[2];
-    float pad[2];
+    float orthographic; // ORTHO: 1.0 = orthographic, 0.0 = perspective
+    float pad[1];
 };
 
 void camera_init(Camera* cam);
