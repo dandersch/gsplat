@@ -66,7 +66,7 @@ static void normalize3(float* v) {
 }
 
 void camera_update(Camera* cam, const bool* keys, float dx, float dy, float dt) {
-    // keys: 0=W, 1=A, 2=S, 3=D, 4=Space, 5=LCtrl, 6=LShift
+    // keys: 0=W, 1=A, 2=S, 3=D, 4=Space, 5=LCtrl, 6=LShift, 7=E, 8=Q
     if (cam->camera_mode) {
         cam->yaw   += dx * cam->look_sensitivity;
         cam->pitch += dy * cam->look_sensitivity;
@@ -109,6 +109,12 @@ void camera_update(Camera* cam, const bool* keys, float dx, float dy, float dt) 
     }
     if (keys[5]) { // LCtrl - down
         cam->position[1] -= speed;
+    }
+    if (keys[7]) { // E - down
+        cam->position[1] -= speed;
+    }
+    if (keys[8]) { // Q - up
+        cam->position[1] += speed;
     }
 }
 

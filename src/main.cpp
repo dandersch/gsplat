@@ -90,7 +90,7 @@ int main(int argc, char* argv[]) {
     camera_init(&cam);
     SDL_SetWindowRelativeMouseMode(window, true); // start in camera mode
 
-    bool keys[7] = {}; // W A S D Space LCtrl LShift
+    bool keys[9] = {}; // W A S D Space LCtrl LShift E Q
     uint64_t last_time = SDL_GetPerformanceCounter();
     uint64_t freq = SDL_GetPerformanceFrequency();
     bool running = true;
@@ -129,6 +129,8 @@ int main(int argc, char* argv[]) {
                     case SDL_SCANCODE_SPACE: keys[4] = down; break;
                     case SDL_SCANCODE_LCTRL: keys[5] = down; break;
                     case SDL_SCANCODE_LSHIFT: keys[6] = down; break;
+                    case SDL_SCANCODE_E: keys[7] = down; break;
+                    case SDL_SCANCODE_Q: keys[8] = down; break;
                     case SDL_SCANCODE_ESCAPE: if (down) running = false; break;
                     default: break;
                 }
