@@ -50,7 +50,7 @@ void free_scene(GaussianScene* scene);
 GpuGaussian* pack_gpu_gaussians(const GaussianScene* scene);
 
 // Cull and record depth. Fills visible_indices/depths/count.
-void cull_gaussians(GaussianScene* scene, const float* view_matrix, const float* proj_matrix, bool orthographic = false); // ORTHO: added ortho param
+void cull_gaussians(GaussianScene* scene, const float* view_matrix, const float* proj_matrix, float ortho_blend = 0.0f);
 
 // Radix sort, back-to-front.
 void sort_gaussians(SortContext* ctx);

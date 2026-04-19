@@ -77,23 +77,11 @@ void main() {
     float fy = abs(proj[1][1]) * viewport.y * 0.5;
 
     // 7. Jacobian of the screen-space projection at t
-    // ORTHO BEGIN: orthographic has no depth-dependent terms
-    float J00, J11, J02, J12;
-    if (orthographic > 0.5) {
-        // Orthographic: no 1/z foreshortening. Signs negated vs naive formula
-        // because perspective implicitly negates via division by negative t.z.
-        J00 = -fx;
-        J11 = fy;
-        J02 = 0.0;
-        J12 = 0.0;
-    } else {
-        // Perspective: px = fx * tx / tz + cx, py = cy - fy * ty / tz
-        J00 = fx / t.z;
-        J11 = -fy / t.z;
-        J02 = -fx * t.x / (t.z * t.z);
-        J12 = fy * t.y / (t.z * t.z);
-    }
-    // ORTHO END
+    // Lerp between perspective and orthographic Jacobians
+    float J00 = mix(fx / t.z,                     -fx, orthographic);
+    float J11 = mix(-fy / t.z,                     fy, orthographic);
+    float J02 = mix(-fx * t.x / (t.z * t.z),     0.0, orthographic);
+    float J12 = mix( fy * t.y / (t.z * t.z),     0.0, orthographic);
 
     // 8. View rotation (upper-left 3x3 of view matrix)
     mat3 W = mat3(view);
@@ -120,22 +108,16 @@ void main() {
     if (det < 1e-6) det = 1e-6;  // Guard against degenerate case
     vec3 conic = vec3(c / det, -b / det, a / det);
 
-    // 12. Compute screen-space center
-    // ORTHO BEGIN: orthographic has no perspective division for center
-    vec2 center_px;
-    if (orthographic > 0.5) {
-        // Signs negated: perspective divides by negative t.z which flips both axes
-        center_px = vec2(
-            -fx * t.x + viewport.x * 0.5,
-            viewport.y * 0.5 + fy * t.y
-        );
-    } else {
-        center_px = vec2(
-            fx * t.x / t.z + viewport.x * 0.5,
-            viewport.y * 0.5 - fy * t.y / t.z
-        );
-    }
-    // ORTHO END
+    // 12. Compute screen-space center (lerp between perspective and orthographic)
+    vec2 persp_center = vec2(
+        fx * t.x / t.z + viewport.x * 0.5,
+        viewport.y * 0.5 - fy * t.y / t.z
+    );
+    vec2 ortho_center = vec2(
+        -fx * t.x + viewport.x * 0.5,
+        viewport.y * 0.5 + fy * t.y
+    );
+    vec2 center_px = mix(persp_center, ortho_center, orthographic);
 
     // 13. Compute quad radius (3 sigma)
     float radius_x = ceil(3.0 * sqrt(a));

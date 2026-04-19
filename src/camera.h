@@ -14,6 +14,7 @@ struct Camera {
     bool  camera_mode;
     bool  orthographic;
     float ortho_size;
+    float ortho_blend; // 0.0 = perspective, 1.0 = orthographic, intermediate = transitioning
 };
 
 struct CameraUniforms {

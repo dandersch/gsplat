@@ -231,17 +231,30 @@ int main(int argc, char* argv[]) {
         SDL_GetWindowSize(window, &win_w, &win_h);
         float aspect = (float)win_w / (float)win_h;
 
+        // Animate ortho blend toward target
+        {
+            float target = cam.orthographic ? 1.0f : 0.0f;
+            float blend_speed = 3.0f; // 1/speed seconds for full transition
+            if (cam.ortho_blend < target) {
+                cam.ortho_blend += blend_speed * dt;
+                if (cam.ortho_blend > target) cam.ortho_blend = target;
+            } else if (cam.ortho_blend > target) {
+                cam.ortho_blend -= blend_speed * dt;
+                if (cam.ortho_blend < target) cam.ortho_blend = target;
+            }
+        }
+
         // Build camera uniforms
         CameraUniforms cam_uniforms = {};
         camera_get_view_matrix(&cam, cam_uniforms.view);
         camera_get_proj_matrix(&cam, aspect, cam_uniforms.proj);
         cam_uniforms.viewport[0] = (float)win_w;
         cam_uniforms.viewport[1] = (float)win_h;
-        cam_uniforms.orthographic = cam.orthographic ? 1.0f : 0.0f; // ORTHO: pass flag to shader
+        cam_uniforms.orthographic = cam.ortho_blend;
 
         // Cull + sort
         if (scene_loaded) {
-            cull_gaussians(&scene, cam_uniforms.view, cam_uniforms.proj, cam.orthographic); // ORTHO
+            cull_gaussians(&scene, cam_uniforms.view, cam_uniforms.proj, cam.ortho_blend);
 
             if (scene.visible_count > 0) {
                 SortContext sort_ctx = {};

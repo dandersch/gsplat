@@ -247,7 +247,7 @@ static void mat4_transform_point(const float* m, const float* p, float* out) {
     out[2] = m[2]*p[0] + m[6]*p[1] + m[10]*p[2] + m[14];
 }
 
-void cull_gaussians(GaussianScene* scene, const float* view, const float* proj, bool orthographic) {
+void cull_gaussians(GaussianScene* scene, const float* view, const float* proj, float ortho_blend) {
     scene->visible_count = 0;
 
     for (uint32_t i = 0; i < scene->gaussian_count; i++) {
@@ -258,16 +258,10 @@ void cull_gaussians(GaussianScene* scene, const float* view, const float* proj, 
         if (p_view[2] > -0.2f) continue;
 
         // Frustum cull: project to NDC and check with margin
-        // ORTHO BEGIN: orthographic has no perspective division
-        float ndc_x, ndc_y;
-        if (orthographic) {
-            ndc_x = proj[0] * p_view[0];
-            ndc_y = proj[5] * p_view[1];
-        } else {
-            ndc_x = (proj[0] * p_view[0]) / (-p_view[2]);
-            ndc_y = (proj[5] * p_view[1]) / (-p_view[2]);
-        }
-        // ORTHO END
+        // Lerp between perspective division and no division
+        float inv_z = -1.0f / p_view[2];
+        float ndc_x = (proj[0] * p_view[0]) * inv_z * (1.0f - ortho_blend) + proj[0] * p_view[0] * ortho_blend;
+        float ndc_y = (proj[5] * p_view[1]) * inv_z * (1.0f - ortho_blend) + proj[5] * p_view[1] * ortho_blend;
 
         float abs_ndc_x = ndc_x < 0 ? -ndc_x : ndc_x;
         float abs_ndc_y = ndc_y < 0 ? -ndc_y : ndc_y;

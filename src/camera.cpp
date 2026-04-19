@@ -17,6 +17,7 @@ void camera_init(Camera* cam) {
     cam->camera_mode = true;
     cam->orthographic = false;
     cam->ortho_size = 1.0f;
+    cam->ortho_blend = 0.0f;
 }
 
 void camera_get_forward(const Camera* cam, float* out) {
@@ -155,23 +156,29 @@ void camera_get_view_matrix(const Camera* cam, float* m) {
 void camera_get_proj_matrix(const Camera* cam, float aspect, float* m) {
     float n = cam->near_plane;
     float fa = cam->far_plane;
+    float t = cam->ortho_blend;
 
-    memset(m, 0, 16 * sizeof(float));
+    // Build perspective matrix
+    float persp[16] = {};
+    float f = 1.0f / tanf(cam->fov_y * 0.5f);
+    persp[0]  = f / aspect;
+    persp[5]  = -f;  // Vulkan Y-flip
+    persp[10] = fa / (n - fa);
+    persp[11] = -1.0f;
+    persp[14] = (n * fa) / (n - fa);
 
-    if (cam->orthographic) {
-        float half_h = cam->ortho_size;
-        float half_w = half_h * aspect;
-        m[0]  = 1.0f / half_w;
-        m[5]  = -1.0f / half_h;  // Vulkan Y-flip
-        m[10] = 1.0f / (n - fa);
-        m[14] = n / (n - fa);
-        m[15] = 1.0f;
-    } else {
-        float f = 1.0f / tanf(cam->fov_y * 0.5f);
-        m[0]  = f / aspect;
-        m[5]  = -f;  // Vulkan Y-flip
-        m[10] = fa / (n - fa);
-        m[11] = -1.0f;
-        m[14] = (n * fa) / (n - fa);
+    // Build orthographic matrix
+    float ortho[16] = {};
+    float half_h = cam->ortho_size;
+    float half_w = half_h * aspect;
+    ortho[0]  = 1.0f / half_w;
+    ortho[5]  = -1.0f / half_h;  // Vulkan Y-flip
+    ortho[10] = 1.0f / (n - fa);
+    ortho[14] = n / (n - fa);
+    ortho[15] = 1.0f;
+
+    // Lerp element-wise
+    for (int i = 0; i < 16; i++) {
+        m[i] = persp[i] * (1.0f - t) + ortho[i] * t;
     }
 }
