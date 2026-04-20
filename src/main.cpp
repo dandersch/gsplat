@@ -96,6 +96,7 @@ int main(int argc, char* argv[]) {
     bool running = true;
     float refview_max_alpha = 0.5f;
     float node_half_size = 0.5f;
+    bool show_node_boxes = true;
     int frame_num = 0;
 
     // Neighbor scratch buffers
@@ -298,6 +299,7 @@ int main(int argc, char* argv[]) {
             } else {
                 ImGui::SliderFloat("Neighbor Radius", &refviews.neighbor_radius, 0.5f, 10.0f);
             }
+            ImGui::Checkbox("Show Node Boxes", &show_node_boxes);
             ImGui::SliderFloat("Node Box Size", &node_half_size, 0.1f, 1.0f);
             ImGui::SliderFloat("Transition Speed", &refviews.lerp_speed, 1.0f, 10.0f);
             if (refviews.current_node >= 0) {
@@ -418,7 +420,7 @@ int main(int argc, char* argv[]) {
         // Build node render params
         NodeRenderParams node_params = {};
         NodeRenderParams* node_ptr = NULL;
-        if (refviews_loaded && neighbor_count > 0) {
+        if (refviews_loaded && neighbor_count > 0 && show_node_boxes) {
             node_params.positions = neighbor_positions;
             node_params.count = neighbor_count;
             node_params.half_size = node_half_size;
