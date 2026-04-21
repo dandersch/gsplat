@@ -31,7 +31,6 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
     r->current_frame = 0;
     r->splat_pipeline = NULL;
     r->gaussian_count = 0;
-
     r->swapchain_format = SDL_GetGPUSwapchainTextureFormat(device, window);
     fprintf(stderr, "Swapchain format: %d\n", (int)r->swapchain_format);
 
@@ -145,7 +144,7 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
     ov_color_target.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
     ov_color_target.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
     ov_color_target.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
-    ov_color_target.blend_state.color_write_mask = SDL_GPU_COLORCOMPONENT_R | SDL_GPU_COLORCOMPONENT_G | SDL_GPU_COLORCOMPONENT_B | SDL_GPU_COLORCOMPONENT_A;
+    ov_color_target.blend_state.color_write_mask = SDL_GPU_COLORCOMPONENT_R | SDL_GPU_COLORCOMPONENT_G | SDL_GPU_COLORCOMPONENT_B;
 
     SDL_GPUGraphicsPipelineCreateInfo ov_pipeline_info = {};
     ov_pipeline_info.vertex_shader = ov_vert;
@@ -215,6 +214,14 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
 
     SDL_GPUColorTargetDescription wf_color_target = {};
     wf_color_target.format = r->swapchain_format;
+    wf_color_target.blend_state.enable_blend = true;
+    wf_color_target.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_DST_ALPHA;
+    wf_color_target.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+    wf_color_target.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
+    wf_color_target.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ZERO;
+    wf_color_target.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+    wf_color_target.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+    wf_color_target.blend_state.color_write_mask = SDL_GPU_COLORCOMPONENT_R | SDL_GPU_COLORCOMPONENT_G | SDL_GPU_COLORCOMPONENT_B;
 
     SDL_GPUVertexBufferDescription wf_vb_desc = {};
     wf_vb_desc.slot = 0;
@@ -465,7 +472,7 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
     color_target.clear_color.r = 0.1f;
     color_target.clear_color.g = 0.1f;
     color_target.clear_color.b = 0.1f;
-    color_target.clear_color.a = 1.0f;
+    color_target.clear_color.a = 0.0f;
 
     SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &color_target, 1, NULL);
     if (!pass) {
@@ -473,12 +480,10 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
         return;
     }
 
-    // Draw gaussians
+    // Draw gaussians (first: writes depth for wireframe occlusion)
     if (scene->visible_count > 0 && r->splat_pipeline && r->gaussian_buffer && r->index_buffer) {
         SDL_BindGPUGraphicsPipeline(pass, r->splat_pipeline);
 
-        // Bind storage buffers - index buffer at slot 0, gaussian buffer at slot 1
-        // (matches shader bindings in set 0: IndexBuffer at binding 0, GaussianBuffer at binding 1)
         SDL_GPUBuffer* storage_bufs[2] = { r->index_buffer, r->gaussian_buffer };
         SDL_BindGPUVertexStorageBuffers(pass, 0, storage_bufs, 2);
 
@@ -487,7 +492,7 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
         SDL_DrawGPUPrimitives(pass, 6, scene->visible_count, 0, 0);
     }
 
-    // Overlay (equirectangular panorama)
+    // Overlay (equirectangular panorama, no depth test/write — drawn over splats)
     if (overlay && overlay->texture && overlay->alpha > 0.0f && r->overlay_pipeline) {
         SDL_BindGPUGraphicsPipeline(pass, r->overlay_pipeline);
 
@@ -496,8 +501,6 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
         sampler_binding.sampler = r->overlay_sampler;
         SDL_BindGPUFragmentSamplers(pass, 0, &sampler_binding, 1);
 
-        // Pack uniforms: camera_ray_basis (64) + tan_half_fov (8) + pad (8)
-        //              + ref_rotation (64) + alpha (4) + pad (12) = 160 bytes
         struct {
             float camera_ray_basis[16];
             float camera_tan_half_fov[2];
@@ -517,7 +520,7 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
         SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
     }
 
-    // Wireframe node cubes (rendered over overlay so they're always visible)
+    // Wireframe node cubes (depth-tested against splats, drawn over overlay)
     if (nodes && nodes->count > 0 && r->wireframe_pipeline) {
         SDL_BindGPUGraphicsPipeline(pass, r->wireframe_pipeline);
 
