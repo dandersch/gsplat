@@ -133,7 +133,9 @@ void main() {
         2.0 * pos_px.x / viewport.x - 1.0,
         1.0 - 2.0 * pos_px.y / viewport.y  // Flip Y for NDC
     );
-    gl_Position = vec4(ndc, 0.0, 1.0);
+    // Compute proper depth from projection matrix (proj[2][2]*z + proj[3][2]) / (-z)
+    float ndc_z = (proj[2][2] * t.z + proj[3][2]) / (-t.z);
+    gl_Position = vec4(ndc, ndc_z, 1.0);
 
     // 15. Pass outputs to fragment shader
     frag_color = color;

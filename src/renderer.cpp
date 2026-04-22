@@ -90,6 +90,9 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
     pipeline_info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     pipeline_info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
     pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+    pipeline_info.depth_stencil_state.enable_depth_test = true;
+    pipeline_info.depth_stencil_state.enable_depth_write = false;
+    pipeline_info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS;
     pipeline_info.target_info.num_color_targets = 1;
     pipeline_info.target_info.color_target_descriptions = &color_target;
     pipeline_info.target_info.has_depth_stencil_target = true;
@@ -272,14 +275,8 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
     // TODO: temporary — mesh pipeline should have its own shaders eventually
     SDL_GPUColorTargetDescription mesh_color_target = {};
     mesh_color_target.format = r->swapchain_format;
-    mesh_color_target.blend_state.enable_blend = true;
-    mesh_color_target.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_DST_ALPHA;
-    mesh_color_target.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
-    mesh_color_target.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
-    mesh_color_target.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ZERO;
-    mesh_color_target.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
-    mesh_color_target.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
-    mesh_color_target.blend_state.color_write_mask = SDL_GPU_COLORCOMPONENT_R | SDL_GPU_COLORCOMPONENT_G | SDL_GPU_COLORCOMPONENT_B;
+    mesh_color_target.blend_state.enable_blend = false;
+    mesh_color_target.blend_state.color_write_mask = SDL_GPU_COLORCOMPONENT_R | SDL_GPU_COLORCOMPONENT_G | SDL_GPU_COLORCOMPONENT_B | SDL_GPU_COLORCOMPONENT_A;
 
     SDL_GPUGraphicsPipelineCreateInfo mesh_pipeline_info = {};
     mesh_pipeline_info.vertex_shader = wf_vert;
@@ -621,6 +618,55 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
         return;
     }
 
+    // Mesh test cubes (drawn before splats, writes depth so splats depth-test against it)
+    // TODO: temporary — reusing wireframe shaders for flat-colored mesh rendering
+    if (r->mesh_pipeline && r->mesh_vertex_buffer && r->mesh_index_buffer) {
+        SDL_BindGPUGraphicsPipeline(pass, r->mesh_pipeline);
+
+        SDL_GPUBufferBinding mesh_vb_bind = {};
+        mesh_vb_bind.buffer = r->mesh_vertex_buffer;
+        SDL_BindGPUVertexBuffers(pass, 0, &mesh_vb_bind, 1);
+
+        SDL_GPUBufferBinding mesh_ib_bind = {};
+        mesh_ib_bind.buffer = r->mesh_index_buffer;
+        SDL_BindGPUIndexBuffer(pass, &mesh_ib_bind, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+
+        float view_corrected[16];
+        memcpy(view_corrected, cam->view, sizeof(view_corrected));
+        view_corrected[0]  = -view_corrected[0];
+        view_corrected[4]  = -view_corrected[4];
+        view_corrected[8]  = -view_corrected[8];
+        view_corrected[12] = -view_corrected[12];
+        float vp[16];
+        mat4_mul(cam->proj, view_corrected, vp);
+
+        float model[16];
+        mat4_translate_scale(0.0f, 0.0f, 0.0f, 1.0f, model);
+
+        float mvp[16];
+        mat4_mul(vp, model, mvp);
+
+        struct { float mvp[16]; float color[4]; } mesh_uniforms;
+        memcpy(mesh_uniforms.mvp, mvp, sizeof(mvp));
+        mesh_uniforms.color[0] = 1.0f;
+        mesh_uniforms.color[1] = 0.3f;
+        mesh_uniforms.color[2] = 0.1f;
+        mesh_uniforms.color[3] = 1.0f;
+
+        SDL_PushGPUVertexUniformData(cmd, 0, &mesh_uniforms, sizeof(mesh_uniforms));
+        SDL_DrawGPUIndexedPrimitives(pass, 36, 1, 0, 0, 0);
+
+        // Second test cube outside the scene
+        mat4_translate_scale(-4.0f, 0.0f, -18.0f, 2.0f, model);
+        mat4_mul(vp, model, mvp);
+        memcpy(mesh_uniforms.mvp, mvp, sizeof(mvp));
+        mesh_uniforms.color[0] = 0.1f;
+        mesh_uniforms.color[1] = 1.0f;
+        mesh_uniforms.color[2] = 0.3f;
+        SDL_PushGPUVertexUniformData(cmd, 0, &mesh_uniforms, sizeof(mesh_uniforms));
+        SDL_DrawGPUIndexedPrimitives(pass, 36, 1, 0, 0, 0);
+    }
+
     // Draw gaussians (alpha accumulation scaled by wireframe_occlusion blend constant)
     if (scene->visible_count > 0 && r->splat_pipeline && r->gaussian_buffer && r->index_buffer) {
         SDL_BindGPUGraphicsPipeline(pass, r->splat_pipeline);
@@ -661,45 +707,6 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
 
         SDL_PushGPUFragmentUniformData(cmd, 0, &ov_uniforms, sizeof(ov_uniforms));
         SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
-    }
-
-    // Mesh test cube (drawn after splats, uses depth buffer for self-occlusion)
-    // TODO: temporary — reusing wireframe shaders for flat-colored mesh rendering
-    if (r->mesh_pipeline && r->mesh_vertex_buffer && r->mesh_index_buffer) {
-        SDL_BindGPUGraphicsPipeline(pass, r->mesh_pipeline);
-
-        SDL_GPUBufferBinding mesh_vb_bind = {};
-        mesh_vb_bind.buffer = r->mesh_vertex_buffer;
-        SDL_BindGPUVertexBuffers(pass, 0, &mesh_vb_bind, 1);
-
-        SDL_GPUBufferBinding mesh_ib_bind = {};
-        mesh_ib_bind.buffer = r->mesh_index_buffer;
-        SDL_BindGPUIndexBuffer(pass, &mesh_ib_bind, SDL_GPU_INDEXELEMENTSIZE_16BIT);
-
-        float view_corrected[16];
-        memcpy(view_corrected, cam->view, sizeof(view_corrected));
-        view_corrected[0]  = -view_corrected[0];
-        view_corrected[4]  = -view_corrected[4];
-        view_corrected[8]  = -view_corrected[8];
-        view_corrected[12] = -view_corrected[12];
-        float vp[16];
-        mat4_mul(cam->proj, view_corrected, vp);
-
-        float model[16];
-        mat4_translate_scale(0.0f, 0.0f, 0.0f, 1.0f, model);
-
-        float mvp[16];
-        mat4_mul(vp, model, mvp);
-
-        struct { float mvp[16]; float color[4]; } mesh_uniforms;
-        memcpy(mesh_uniforms.mvp, mvp, sizeof(mvp));
-        mesh_uniforms.color[0] = 1.0f;
-        mesh_uniforms.color[1] = 0.3f;
-        mesh_uniforms.color[2] = 0.1f;
-        mesh_uniforms.color[3] = 1.0f;
-
-        SDL_PushGPUVertexUniformData(cmd, 0, &mesh_uniforms, sizeof(mesh_uniforms));
-        SDL_DrawGPUIndexedPrimitives(pass, 36, 1, 0, 0, 0);
     }
 
     // Wireframe node cubes (depth-tested against splats, drawn over overlay)
