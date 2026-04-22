@@ -30,6 +30,12 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
     }
     r->current_frame = 0;
     r->splat_pipeline = NULL;
+    r->mesh_pipeline = NULL;
+    r->mesh_vertex_buffer = NULL;
+    r->mesh_index_buffer = NULL;
+    r->depth_texture = NULL;
+    r->depth_w = 0;
+    r->depth_h = 0;
     r->gaussian_count = 0;
     r->swapchain_format = SDL_GetGPUSwapchainTextureFormat(device, window);
     fprintf(stderr, "Swapchain format: %d\n", (int)r->swapchain_format);
@@ -73,7 +79,7 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
     color_target.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
     color_target.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
     color_target.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
-    color_target.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+    color_target.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_CONSTANT_COLOR;
     color_target.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
     color_target.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
     color_target.blend_state.color_write_mask = SDL_GPU_COLORCOMPONENT_R | SDL_GPU_COLORCOMPONENT_G | SDL_GPU_COLORCOMPONENT_B | SDL_GPU_COLORCOMPONENT_A;
@@ -86,6 +92,8 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
     pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
     pipeline_info.target_info.num_color_targets = 1;
     pipeline_info.target_info.color_target_descriptions = &color_target;
+    pipeline_info.target_info.has_depth_stencil_target = true;
+    pipeline_info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D16_UNORM;
 
     r->splat_pipeline = SDL_CreateGPUGraphicsPipeline(device, &pipeline_info);
     SDL_ReleaseGPUShader(device, vert_shader);
@@ -154,6 +162,8 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
     ov_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
     ov_pipeline_info.target_info.num_color_targets = 1;
     ov_pipeline_info.target_info.color_target_descriptions = &ov_color_target;
+    ov_pipeline_info.target_info.has_depth_stencil_target = true;
+    ov_pipeline_info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D16_UNORM;
 
     r->overlay_pipeline = SDL_CreateGPUGraphicsPipeline(device, &ov_pipeline_info);
     SDL_ReleaseGPUShader(device, ov_vert);
@@ -246,13 +256,56 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
     wf_pipeline_info.vertex_input_state.vertex_attributes = &wf_attr;
     wf_pipeline_info.target_info.num_color_targets = 1;
     wf_pipeline_info.target_info.color_target_descriptions = &wf_color_target;
+    wf_pipeline_info.target_info.has_depth_stencil_target = true;
+    wf_pipeline_info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D16_UNORM;
 
     r->wireframe_pipeline = SDL_CreateGPUGraphicsPipeline(device, &wf_pipeline_info);
-    SDL_ReleaseGPUShader(device, wf_vert);
-    SDL_ReleaseGPUShader(device, wf_frag);
 
     if (!r->wireframe_pipeline) {
         fprintf(stderr, "FAIL wireframe pipeline: %s\n", SDL_GetError());
+        SDL_ReleaseGPUShader(device, wf_vert);
+        SDL_ReleaseGPUShader(device, wf_frag);
+        return false;
+    }
+
+    // --- Mesh pipeline (reuses wireframe shaders) ---
+    // TODO: temporary — mesh pipeline should have its own shaders eventually
+    SDL_GPUColorTargetDescription mesh_color_target = {};
+    mesh_color_target.format = r->swapchain_format;
+    mesh_color_target.blend_state.enable_blend = true;
+    mesh_color_target.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_DST_ALPHA;
+    mesh_color_target.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+    mesh_color_target.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
+    mesh_color_target.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ZERO;
+    mesh_color_target.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+    mesh_color_target.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+    mesh_color_target.blend_state.color_write_mask = SDL_GPU_COLORCOMPONENT_R | SDL_GPU_COLORCOMPONENT_G | SDL_GPU_COLORCOMPONENT_B;
+
+    SDL_GPUGraphicsPipelineCreateInfo mesh_pipeline_info = {};
+    mesh_pipeline_info.vertex_shader = wf_vert;
+    mesh_pipeline_info.fragment_shader = wf_frag;
+    mesh_pipeline_info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    mesh_pipeline_info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+    mesh_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
+    mesh_pipeline_info.vertex_input_state.num_vertex_buffers = 1;
+    mesh_pipeline_info.vertex_input_state.vertex_buffer_descriptions = &wf_vb_desc;
+    mesh_pipeline_info.vertex_input_state.num_vertex_attributes = 1;
+    mesh_pipeline_info.vertex_input_state.vertex_attributes = &wf_attr;
+    mesh_pipeline_info.depth_stencil_state.enable_depth_test = true;
+    mesh_pipeline_info.depth_stencil_state.enable_depth_write = true;
+    mesh_pipeline_info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS;
+    mesh_pipeline_info.target_info.num_color_targets = 1;
+    mesh_pipeline_info.target_info.color_target_descriptions = &mesh_color_target;
+    mesh_pipeline_info.target_info.has_depth_stencil_target = true;
+    mesh_pipeline_info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D16_UNORM;
+
+    r->mesh_pipeline = SDL_CreateGPUGraphicsPipeline(device, &mesh_pipeline_info);
+
+    SDL_ReleaseGPUShader(device, wf_vert);
+    SDL_ReleaseGPUShader(device, wf_frag);
+
+    if (!r->mesh_pipeline) {
+        fprintf(stderr, "FAIL mesh pipeline: %s\n", SDL_GetError());
         return false;
     }
 
@@ -317,6 +370,71 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
     SDL_SubmitGPUCommandBuffer(cube_cmd);
     SDL_WaitForGPUIdle(device);
     SDL_ReleaseGPUTransferBuffer(device, cube_xfer);
+
+    // Upload mesh cube geometry (same vertices, triangle indices for solid rendering)
+    float mesh_verts[8 * 3] = {
+        -0.5f, -0.5f, -0.5f,  // 0
+         0.5f, -0.5f, -0.5f,  // 1
+         0.5f,  0.5f, -0.5f,  // 2
+        -0.5f,  0.5f, -0.5f,  // 3
+        -0.5f, -0.5f,  0.5f,  // 4
+         0.5f, -0.5f,  0.5f,  // 5
+         0.5f,  0.5f,  0.5f,  // 6
+        -0.5f,  0.5f,  0.5f,  // 7
+    };
+    uint16_t mesh_indices[36] = {
+        0,2,1,  0,3,2,  // back face  (-Z)
+        4,5,6,  4,6,7,  // front face (+Z)
+        1,6,5,  1,2,6,  // right face (+X)
+        0,4,7,  0,7,3,  // left face  (-X)
+        2,3,7,  2,7,6,  // top face   (+Y)
+        0,1,5,  0,5,4,  // bottom face(-Y)
+    };
+
+    uint32_t mesh_vb_size = sizeof(mesh_verts);
+    uint32_t mesh_ib_size = sizeof(mesh_indices);
+
+    SDL_GPUBufferCreateInfo mesh_vb_info = {};
+    mesh_vb_info.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
+    mesh_vb_info.size = mesh_vb_size;
+    r->mesh_vertex_buffer = SDL_CreateGPUBuffer(device, &mesh_vb_info);
+
+    SDL_GPUBufferCreateInfo mesh_ib_info = {};
+    mesh_ib_info.usage = SDL_GPU_BUFFERUSAGE_INDEX;
+    mesh_ib_info.size = mesh_ib_size;
+    r->mesh_index_buffer = SDL_CreateGPUBuffer(device, &mesh_ib_info);
+
+    SDL_GPUTransferBufferCreateInfo mesh_xfer_info = {};
+    mesh_xfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    mesh_xfer_info.size = mesh_vb_size + mesh_ib_size;
+    SDL_GPUTransferBuffer* mesh_xfer = SDL_CreateGPUTransferBuffer(device, &mesh_xfer_info);
+
+    void* mesh_map = SDL_MapGPUTransferBuffer(device, mesh_xfer, false);
+    memcpy(mesh_map, mesh_verts, mesh_vb_size);
+    memcpy((uint8_t*)mesh_map + mesh_vb_size, mesh_indices, mesh_ib_size);
+    SDL_UnmapGPUTransferBuffer(device, mesh_xfer);
+
+    SDL_GPUCommandBuffer* mesh_cmd = SDL_AcquireGPUCommandBuffer(device);
+    SDL_GPUCopyPass* mesh_copy = SDL_BeginGPUCopyPass(mesh_cmd);
+
+    SDL_GPUTransferBufferLocation mesh_src = {};
+    mesh_src.transfer_buffer = mesh_xfer;
+    mesh_src.offset = 0;
+    SDL_GPUBufferRegion mesh_vb_dst = {};
+    mesh_vb_dst.buffer = r->mesh_vertex_buffer;
+    mesh_vb_dst.size = mesh_vb_size;
+    SDL_UploadToGPUBuffer(mesh_copy, &mesh_src, &mesh_vb_dst, false);
+
+    mesh_src.offset = mesh_vb_size;
+    SDL_GPUBufferRegion mesh_ib_dst = {};
+    mesh_ib_dst.buffer = r->mesh_index_buffer;
+    mesh_ib_dst.size = mesh_ib_size;
+    SDL_UploadToGPUBuffer(mesh_copy, &mesh_src, &mesh_ib_dst, false);
+
+    SDL_EndGPUCopyPass(mesh_copy);
+    SDL_SubmitGPUCommandBuffer(mesh_cmd);
+    SDL_WaitForGPUIdle(device);
+    SDL_ReleaseGPUTransferBuffer(device, mesh_xfer);
 
     fprintf(stderr, "Renderer init OK\n");
     return true;
@@ -412,7 +530,7 @@ static void mat4_translate_scale(float tx, float ty, float tz, float s, float* o
     out[15] = 1.0f;
 }
 
-void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUniforms* cam, const OverlayParams* overlay, const NodeRenderParams* nodes) {
+void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUniforms* cam, const OverlayParams* overlay, const NodeRenderParams* nodes, float wireframe_occlusion) {
     // Get current frame's transfer buffer and fence
     uint32_t buf_idx = r->current_frame % MAX_FRAMES_IN_FLIGHT;
     SDL_GPUTransferBuffer* transfer_buf = r->transfer_bufs[buf_idx];
@@ -465,6 +583,22 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
         return;
     }
 
+    // Recreate depth texture if swapchain dimensions changed
+    if (sw_w != r->depth_w || sw_h != r->depth_h) {
+        if (r->depth_texture) SDL_ReleaseGPUTexture(r->device, r->depth_texture);
+        SDL_GPUTextureCreateInfo depth_tex_info = {};
+        depth_tex_info.type = SDL_GPU_TEXTURETYPE_2D;
+        depth_tex_info.format = SDL_GPU_TEXTUREFORMAT_D16_UNORM;
+        depth_tex_info.width = sw_w;
+        depth_tex_info.height = sw_h;
+        depth_tex_info.layer_count_or_depth = 1;
+        depth_tex_info.num_levels = 1;
+        depth_tex_info.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
+        r->depth_texture = SDL_CreateGPUTexture(r->device, &depth_tex_info);
+        r->depth_w = sw_w;
+        r->depth_h = sw_h;
+    }
+
     SDL_GPUColorTargetInfo color_target = {};
     color_target.texture = swapchain_tex;
     color_target.load_op = SDL_GPU_LOADOP_CLEAR;
@@ -474,15 +608,24 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
     color_target.clear_color.b = 0.1f;
     color_target.clear_color.a = 0.0f;
 
-    SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &color_target, 1, NULL);
+    SDL_GPUDepthStencilTargetInfo depth_target = {};
+    depth_target.texture = r->depth_texture;
+    depth_target.load_op = SDL_GPU_LOADOP_CLEAR;
+    depth_target.store_op = SDL_GPU_STOREOP_DONT_CARE;
+    depth_target.clear_depth = 1.0f;
+    depth_target.cycle = true;
+
+    SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &color_target, 1, &depth_target);
     if (!pass) {
         SDL_SubmitGPUCommandBuffer(cmd);
         return;
     }
 
-    // Draw gaussians (first: writes depth for wireframe occlusion)
+    // Draw gaussians (alpha accumulation scaled by wireframe_occlusion blend constant)
     if (scene->visible_count > 0 && r->splat_pipeline && r->gaussian_buffer && r->index_buffer) {
         SDL_BindGPUGraphicsPipeline(pass, r->splat_pipeline);
+        SDL_FColor blend_const = { 0, 0, 0, wireframe_occlusion };
+        SDL_SetGPUBlendConstants(pass, blend_const);
 
         SDL_GPUBuffer* storage_bufs[2] = { r->index_buffer, r->gaussian_buffer };
         SDL_BindGPUVertexStorageBuffers(pass, 0, storage_bufs, 2);
@@ -518,6 +661,45 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
 
         SDL_PushGPUFragmentUniformData(cmd, 0, &ov_uniforms, sizeof(ov_uniforms));
         SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+    }
+
+    // Mesh test cube (drawn after splats, uses depth buffer for self-occlusion)
+    // TODO: temporary — reusing wireframe shaders for flat-colored mesh rendering
+    if (r->mesh_pipeline && r->mesh_vertex_buffer && r->mesh_index_buffer) {
+        SDL_BindGPUGraphicsPipeline(pass, r->mesh_pipeline);
+
+        SDL_GPUBufferBinding mesh_vb_bind = {};
+        mesh_vb_bind.buffer = r->mesh_vertex_buffer;
+        SDL_BindGPUVertexBuffers(pass, 0, &mesh_vb_bind, 1);
+
+        SDL_GPUBufferBinding mesh_ib_bind = {};
+        mesh_ib_bind.buffer = r->mesh_index_buffer;
+        SDL_BindGPUIndexBuffer(pass, &mesh_ib_bind, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+
+        float view_corrected[16];
+        memcpy(view_corrected, cam->view, sizeof(view_corrected));
+        view_corrected[0]  = -view_corrected[0];
+        view_corrected[4]  = -view_corrected[4];
+        view_corrected[8]  = -view_corrected[8];
+        view_corrected[12] = -view_corrected[12];
+        float vp[16];
+        mat4_mul(cam->proj, view_corrected, vp);
+
+        float model[16];
+        mat4_translate_scale(0.0f, 0.0f, 0.0f, 1.0f, model);
+
+        float mvp[16];
+        mat4_mul(vp, model, mvp);
+
+        struct { float mvp[16]; float color[4]; } mesh_uniforms;
+        memcpy(mesh_uniforms.mvp, mvp, sizeof(mvp));
+        mesh_uniforms.color[0] = 1.0f;
+        mesh_uniforms.color[1] = 0.3f;
+        mesh_uniforms.color[2] = 0.1f;
+        mesh_uniforms.color[3] = 1.0f;
+
+        SDL_PushGPUVertexUniformData(cmd, 0, &mesh_uniforms, sizeof(mesh_uniforms));
+        SDL_DrawGPUIndexedPrimitives(pass, 36, 1, 0, 0, 0);
     }
 
     // Wireframe node cubes (depth-tested against splats, drawn over overlay)
@@ -592,11 +774,15 @@ void renderer_destroy(Renderer* r) {
     if (r->splat_pipeline) SDL_ReleaseGPUGraphicsPipeline(r->device, r->splat_pipeline);
     if (r->overlay_pipeline) SDL_ReleaseGPUGraphicsPipeline(r->device, r->overlay_pipeline);
     if (r->wireframe_pipeline) SDL_ReleaseGPUGraphicsPipeline(r->device, r->wireframe_pipeline);
+    if (r->mesh_pipeline) SDL_ReleaseGPUGraphicsPipeline(r->device, r->mesh_pipeline);
     if (r->overlay_sampler) SDL_ReleaseGPUSampler(r->device, r->overlay_sampler);
     if (r->gaussian_buffer) SDL_ReleaseGPUBuffer(r->device, r->gaussian_buffer);
     if (r->cube_vertex_buffer) SDL_ReleaseGPUBuffer(r->device, r->cube_vertex_buffer);
     if (r->cube_index_buffer) SDL_ReleaseGPUBuffer(r->device, r->cube_index_buffer);
+    if (r->mesh_vertex_buffer) SDL_ReleaseGPUBuffer(r->device, r->mesh_vertex_buffer);
+    if (r->mesh_index_buffer) SDL_ReleaseGPUBuffer(r->device, r->mesh_index_buffer);
     if (r->index_buffer) SDL_ReleaseGPUBuffer(r->device, r->index_buffer);
+    if (r->depth_texture) SDL_ReleaseGPUTexture(r->device, r->depth_texture);
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         if (r->transfer_bufs[i]) SDL_ReleaseGPUTransferBuffer(r->device, r->transfer_bufs[i]);
     }

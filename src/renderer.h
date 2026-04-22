@@ -26,11 +26,16 @@ struct Renderer {
     SDL_GPUGraphicsPipeline* splat_pipeline;
     SDL_GPUGraphicsPipeline* overlay_pipeline;
     SDL_GPUGraphicsPipeline* wireframe_pipeline;
+    SDL_GPUGraphicsPipeline* mesh_pipeline;
     SDL_GPUSampler*         overlay_sampler;
     SDL_GPUBuffer*          gaussian_buffer;
     SDL_GPUBuffer*          cube_vertex_buffer;
     SDL_GPUBuffer*          cube_index_buffer;
+    SDL_GPUBuffer*          mesh_vertex_buffer;
+    SDL_GPUBuffer*          mesh_index_buffer;
     SDL_GPUBuffer*          index_buffer;
+    SDL_GPUTexture*         depth_texture;
+    uint32_t                depth_w, depth_h;
     SDL_GPUTransferBuffer*  transfer_bufs[MAX_FRAMES_IN_FLIGHT];
     SDL_GPUFence*           frame_fences[MAX_FRAMES_IN_FLIGHT];
     uint32_t                current_frame;
@@ -40,5 +45,5 @@ struct Renderer {
 
 bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window);
 void renderer_upload_gaussians(Renderer* r, const GaussianScene* scene);
-void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUniforms* cam, const OverlayParams* overlay, const NodeRenderParams* nodes);
+void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUniforms* cam, const OverlayParams* overlay, const NodeRenderParams* nodes, float wireframe_occlusion = 1.0f);
 void renderer_destroy(Renderer* r);
