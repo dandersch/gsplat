@@ -33,6 +33,8 @@ struct Renderer {
     SDL_GPUBuffer*          cube_index_buffer;
     SDL_GPUBuffer*          mesh_vertex_buffer;
     SDL_GPUBuffer*          mesh_index_buffer;
+    SDL_GPUTexture*         mesh_texture;
+    SDL_GPUSampler*         mesh_sampler;
     SDL_GPUBuffer*          index_buffer;
     SDL_GPUTexture*         depth_texture;
     uint32_t                depth_w, depth_h;

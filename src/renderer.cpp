@@ -33,6 +33,8 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
     r->mesh_pipeline = NULL;
     r->mesh_vertex_buffer = NULL;
     r->mesh_index_buffer = NULL;
+    r->mesh_texture = NULL;
+    r->mesh_sampler = NULL;
     r->depth_texture = NULL;
     r->depth_w = 0;
     r->depth_h = 0;
@@ -271,23 +273,78 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
         return false;
     }
 
-    // --- Mesh pipeline (reuses wireframe shaders) ---
-    // TODO: temporary — mesh pipeline should have its own shaders eventually
+    SDL_ReleaseGPUShader(device, wf_vert);
+    SDL_ReleaseGPUShader(device, wf_frag);
+
+    // --- Mesh pipeline (dedicated shaders with UV + texture support) ---
+    size_t mesh_vert_size, mesh_frag_size;
+    uint8_t* mesh_vert_code = load_file("shaders/mesh.vert.spv", &mesh_vert_size);
+    uint8_t* mesh_frag_code = load_file("shaders/mesh.frag.spv", &mesh_frag_size);
+    if (!mesh_vert_code || !mesh_frag_code) {
+        fprintf(stderr, "Failed to load mesh shaders\n");
+        free(mesh_vert_code); free(mesh_frag_code);
+        return false;
+    }
+
+    SDL_GPUShaderCreateInfo mesh_vert_info = {};
+    mesh_vert_info.code = mesh_vert_code;
+    mesh_vert_info.code_size = mesh_vert_size;
+    mesh_vert_info.entrypoint = "main";
+    mesh_vert_info.format = SDL_GPU_SHADERFORMAT_SPIRV;
+    mesh_vert_info.stage = SDL_GPU_SHADERSTAGE_VERTEX;
+    mesh_vert_info.num_uniform_buffers = 1;
+
+    SDL_GPUShader* mesh_vs = SDL_CreateGPUShader(device, &mesh_vert_info);
+    free(mesh_vert_code);
+
+    SDL_GPUShaderCreateInfo mesh_frag_info = {};
+    mesh_frag_info.code = mesh_frag_code;
+    mesh_frag_info.code_size = mesh_frag_size;
+    mesh_frag_info.entrypoint = "main";
+    mesh_frag_info.format = SDL_GPU_SHADERFORMAT_SPIRV;
+    mesh_frag_info.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+    mesh_frag_info.num_samplers = 1;
+
+    SDL_GPUShader* mesh_fs = SDL_CreateGPUShader(device, &mesh_frag_info);
+    free(mesh_frag_code);
+
+    if (!mesh_vs || !mesh_fs) {
+        fprintf(stderr, "FAIL mesh shaders: %s\n", SDL_GetError());
+        if (mesh_vs) SDL_ReleaseGPUShader(device, mesh_vs);
+        if (mesh_fs) SDL_ReleaseGPUShader(device, mesh_fs);
+        return false;
+    }
+
     SDL_GPUColorTargetDescription mesh_color_target = {};
     mesh_color_target.format = r->swapchain_format;
     mesh_color_target.blend_state.enable_blend = false;
     mesh_color_target.blend_state.color_write_mask = SDL_GPU_COLORCOMPONENT_R | SDL_GPU_COLORCOMPONENT_G | SDL_GPU_COLORCOMPONENT_B | SDL_GPU_COLORCOMPONENT_A;
 
+    SDL_GPUVertexBufferDescription mesh_vb_desc = {};
+    mesh_vb_desc.slot = 0;
+    mesh_vb_desc.pitch = 5 * sizeof(float); // vec3 pos + vec2 uv
+    mesh_vb_desc.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+
+    SDL_GPUVertexAttribute mesh_attrs[2] = {};
+    mesh_attrs[0].location = 0;
+    mesh_attrs[0].buffer_slot = 0;
+    mesh_attrs[0].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
+    mesh_attrs[0].offset = 0;
+    mesh_attrs[1].location = 1;
+    mesh_attrs[1].buffer_slot = 0;
+    mesh_attrs[1].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
+    mesh_attrs[1].offset = 3 * sizeof(float);
+
     SDL_GPUGraphicsPipelineCreateInfo mesh_pipeline_info = {};
-    mesh_pipeline_info.vertex_shader = wf_vert;
-    mesh_pipeline_info.fragment_shader = wf_frag;
+    mesh_pipeline_info.vertex_shader = mesh_vs;
+    mesh_pipeline_info.fragment_shader = mesh_fs;
     mesh_pipeline_info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     mesh_pipeline_info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
     mesh_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
     mesh_pipeline_info.vertex_input_state.num_vertex_buffers = 1;
-    mesh_pipeline_info.vertex_input_state.vertex_buffer_descriptions = &wf_vb_desc;
-    mesh_pipeline_info.vertex_input_state.num_vertex_attributes = 1;
-    mesh_pipeline_info.vertex_input_state.vertex_attributes = &wf_attr;
+    mesh_pipeline_info.vertex_input_state.vertex_buffer_descriptions = &mesh_vb_desc;
+    mesh_pipeline_info.vertex_input_state.num_vertex_attributes = 2;
+    mesh_pipeline_info.vertex_input_state.vertex_attributes = mesh_attrs;
     mesh_pipeline_info.depth_stencil_state.enable_depth_test = true;
     mesh_pipeline_info.depth_stencil_state.enable_depth_write = true;
     mesh_pipeline_info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS;
@@ -297,9 +354,8 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
     mesh_pipeline_info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D16_UNORM;
 
     r->mesh_pipeline = SDL_CreateGPUGraphicsPipeline(device, &mesh_pipeline_info);
-
-    SDL_ReleaseGPUShader(device, wf_vert);
-    SDL_ReleaseGPUShader(device, wf_frag);
+    SDL_ReleaseGPUShader(device, mesh_vs);
+    SDL_ReleaseGPUShader(device, mesh_fs);
 
     if (!r->mesh_pipeline) {
         fprintf(stderr, "FAIL mesh pipeline: %s\n", SDL_GetError());
@@ -368,24 +424,47 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
     SDL_WaitForGPUIdle(device);
     SDL_ReleaseGPUTransferBuffer(device, cube_xfer);
 
-    // Upload mesh cube geometry (same vertices, triangle indices for solid rendering)
-    float mesh_verts[8 * 3] = {
-        -0.5f, -0.5f, -0.5f,  // 0
-         0.5f, -0.5f, -0.5f,  // 1
-         0.5f,  0.5f, -0.5f,  // 2
-        -0.5f,  0.5f, -0.5f,  // 3
-        -0.5f, -0.5f,  0.5f,  // 4
-         0.5f, -0.5f,  0.5f,  // 5
-         0.5f,  0.5f,  0.5f,  // 6
-        -0.5f,  0.5f,  0.5f,  // 7
+    // Upload mesh cube geometry (per-face vertices with UVs, 4 verts per face × 6 faces = 24)
+    // Each vertex: vec3 position, vec2 uv
+    float mesh_verts[24 * 5] = {
+        // back face (-Z)
+        -0.5f, -0.5f, -0.5f,  0.0f, 0.0f,
+         0.5f, -0.5f, -0.5f,  1.0f, 0.0f,
+         0.5f,  0.5f, -0.5f,  1.0f, 1.0f,
+        -0.5f,  0.5f, -0.5f,  0.0f, 1.0f,
+        // front face (+Z)
+        -0.5f, -0.5f,  0.5f,  0.0f, 0.0f,
+         0.5f, -0.5f,  0.5f,  1.0f, 0.0f,
+         0.5f,  0.5f,  0.5f,  1.0f, 1.0f,
+        -0.5f,  0.5f,  0.5f,  0.0f, 1.0f,
+        // right face (+X)
+         0.5f, -0.5f, -0.5f,  0.0f, 0.0f,
+         0.5f, -0.5f,  0.5f,  1.0f, 0.0f,
+         0.5f,  0.5f,  0.5f,  1.0f, 1.0f,
+         0.5f,  0.5f, -0.5f,  0.0f, 1.0f,
+        // left face (-X)
+        -0.5f, -0.5f,  0.5f,  0.0f, 0.0f,
+        -0.5f, -0.5f, -0.5f,  1.0f, 0.0f,
+        -0.5f,  0.5f, -0.5f,  1.0f, 1.0f,
+        -0.5f,  0.5f,  0.5f,  0.0f, 1.0f,
+        // top face (+Y)
+        -0.5f,  0.5f, -0.5f,  0.0f, 0.0f,
+         0.5f,  0.5f, -0.5f,  1.0f, 0.0f,
+         0.5f,  0.5f,  0.5f,  1.0f, 1.0f,
+        -0.5f,  0.5f,  0.5f,  0.0f, 1.0f,
+        // bottom face (-Y)
+        -0.5f, -0.5f,  0.5f,  0.0f, 0.0f,
+         0.5f, -0.5f,  0.5f,  1.0f, 0.0f,
+         0.5f, -0.5f, -0.5f,  1.0f, 1.0f,
+        -0.5f, -0.5f, -0.5f,  0.0f, 1.0f,
     };
     uint16_t mesh_indices[36] = {
-        0,2,1,  0,3,2,  // back face  (-Z)
-        4,5,6,  4,6,7,  // front face (+Z)
-        1,6,5,  1,2,6,  // right face (+X)
-        0,4,7,  0,7,3,  // left face  (-X)
-        2,3,7,  2,7,6,  // top face   (+Y)
-        0,1,5,  0,5,4,  // bottom face(-Y)
+         0, 2, 1,   0, 3, 2,  // back
+         4, 5, 6,   4, 6, 7,  // front
+         8,10, 9,   8,11,10,  // right
+        12,14,13,  12,15,14,  // left
+        16,18,17,  16,19,18,  // top
+        20,22,21,  20,23,22,  // bottom
     };
 
     uint32_t mesh_vb_size = sizeof(mesh_verts);
@@ -432,6 +511,69 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
     SDL_SubmitGPUCommandBuffer(mesh_cmd);
     SDL_WaitForGPUIdle(device);
     SDL_ReleaseGPUTransferBuffer(device, mesh_xfer);
+
+    // Create 8×8 checkerboard test texture (RGBA8)
+    {
+        const int TEX_SIZE = 8;
+        uint8_t tex_pixels[TEX_SIZE * TEX_SIZE * 4];
+        for (int y = 0; y < TEX_SIZE; y++) {
+            for (int x = 0; x < TEX_SIZE; x++) {
+                bool white = ((x + y) % 2) == 0;
+                int idx = (y * TEX_SIZE + x) * 4;
+                tex_pixels[idx + 0] = white ? 255 : 50;
+                tex_pixels[idx + 1] = white ? 255 : 50;
+                tex_pixels[idx + 2] = white ? 255 : 50;
+                tex_pixels[idx + 3] = 255;
+            }
+        }
+
+        SDL_GPUTextureCreateInfo tex_info = {};
+        tex_info.type = SDL_GPU_TEXTURETYPE_2D;
+        tex_info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        tex_info.width = TEX_SIZE;
+        tex_info.height = TEX_SIZE;
+        tex_info.layer_count_or_depth = 1;
+        tex_info.num_levels = 1;
+        tex_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        r->mesh_texture = SDL_CreateGPUTexture(device, &tex_info);
+
+        SDL_GPUTransferBufferCreateInfo tex_xfer_info = {};
+        tex_xfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+        tex_xfer_info.size = sizeof(tex_pixels);
+        SDL_GPUTransferBuffer* tex_xfer = SDL_CreateGPUTransferBuffer(device, &tex_xfer_info);
+
+        void* tex_map = SDL_MapGPUTransferBuffer(device, tex_xfer, false);
+        memcpy(tex_map, tex_pixels, sizeof(tex_pixels));
+        SDL_UnmapGPUTransferBuffer(device, tex_xfer);
+
+        SDL_GPUCommandBuffer* tex_cmd = SDL_AcquireGPUCommandBuffer(device);
+        SDL_GPUCopyPass* tex_copy = SDL_BeginGPUCopyPass(tex_cmd);
+
+        SDL_GPUTextureTransferInfo tex_src = {};
+        tex_src.transfer_buffer = tex_xfer;
+        tex_src.offset = 0;
+
+        SDL_GPUTextureRegion tex_dst = {};
+        tex_dst.texture = r->mesh_texture;
+        tex_dst.w = TEX_SIZE;
+        tex_dst.h = TEX_SIZE;
+        tex_dst.d = 1;
+
+        SDL_UploadToGPUTexture(tex_copy, &tex_src, &tex_dst, false);
+        SDL_EndGPUCopyPass(tex_copy);
+        SDL_SubmitGPUCommandBuffer(tex_cmd);
+        SDL_WaitForGPUIdle(device);
+        SDL_ReleaseGPUTransferBuffer(device, tex_xfer);
+
+        SDL_GPUSamplerCreateInfo mesh_sampler_info = {};
+        mesh_sampler_info.min_filter = SDL_GPU_FILTER_NEAREST;
+        mesh_sampler_info.mag_filter = SDL_GPU_FILTER_NEAREST;
+        mesh_sampler_info.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+        mesh_sampler_info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+        mesh_sampler_info.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+        mesh_sampler_info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+        r->mesh_sampler = SDL_CreateGPUSampler(device, &mesh_sampler_info);
+    }
 
     fprintf(stderr, "Renderer init OK\n");
     return true;
@@ -619,7 +761,6 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
     }
 
     // Mesh test cubes (drawn before splats, writes depth so splats depth-test against it)
-    // TODO: temporary — reusing wireframe shaders for flat-colored mesh rendering
     if (r->mesh_pipeline && r->mesh_vertex_buffer && r->mesh_index_buffer) {
         SDL_BindGPUGraphicsPipeline(pass, r->mesh_pipeline);
 
@@ -630,6 +771,12 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
         SDL_GPUBufferBinding mesh_ib_bind = {};
         mesh_ib_bind.buffer = r->mesh_index_buffer;
         SDL_BindGPUIndexBuffer(pass, &mesh_ib_bind, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+
+        // Bind checkerboard texture for textured meshes
+        SDL_GPUTextureSamplerBinding mesh_tex_bind = {};
+        mesh_tex_bind.texture = r->mesh_texture;
+        mesh_tex_bind.sampler = r->mesh_sampler;
+        SDL_BindGPUFragmentSamplers(pass, 0, &mesh_tex_bind, 1);
 
         float view_corrected[16];
         memcpy(view_corrected, cam->view, sizeof(view_corrected));
@@ -646,23 +793,26 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
         float mvp[16];
         mat4_mul(vp, model, mvp);
 
-        struct { float mvp[16]; float color[4]; } mesh_uniforms;
+        struct { float mvp[16]; float color[4]; float use_texture; float _pad[3]; } mesh_uniforms;
         memcpy(mesh_uniforms.mvp, mvp, sizeof(mvp));
         mesh_uniforms.color[0] = 1.0f;
         mesh_uniforms.color[1] = 0.3f;
         mesh_uniforms.color[2] = 0.1f;
         mesh_uniforms.color[3] = 1.0f;
+        mesh_uniforms.use_texture = 1.0f;
+        mesh_uniforms._pad[0] = mesh_uniforms._pad[1] = mesh_uniforms._pad[2] = 0.0f;
 
         SDL_PushGPUVertexUniformData(cmd, 0, &mesh_uniforms, sizeof(mesh_uniforms));
         SDL_DrawGPUIndexedPrimitives(pass, 36, 1, 0, 0, 0);
 
-        // Second test cube outside the scene
+        // Second test cube outside the scene (flat colored, no texture)
         mat4_translate_scale(-4.0f, 0.0f, -18.0f, 2.0f, model);
         mat4_mul(vp, model, mvp);
         memcpy(mesh_uniforms.mvp, mvp, sizeof(mvp));
         mesh_uniforms.color[0] = 0.1f;
         mesh_uniforms.color[1] = 1.0f;
         mesh_uniforms.color[2] = 0.3f;
+        mesh_uniforms.use_texture = 0.0f;
         SDL_PushGPUVertexUniformData(cmd, 0, &mesh_uniforms, sizeof(mesh_uniforms));
         SDL_DrawGPUIndexedPrimitives(pass, 36, 1, 0, 0, 0);
     }
@@ -788,6 +938,8 @@ void renderer_destroy(Renderer* r) {
     if (r->cube_index_buffer) SDL_ReleaseGPUBuffer(r->device, r->cube_index_buffer);
     if (r->mesh_vertex_buffer) SDL_ReleaseGPUBuffer(r->device, r->mesh_vertex_buffer);
     if (r->mesh_index_buffer) SDL_ReleaseGPUBuffer(r->device, r->mesh_index_buffer);
+    if (r->mesh_texture) SDL_ReleaseGPUTexture(r->device, r->mesh_texture);
+    if (r->mesh_sampler) SDL_ReleaseGPUSampler(r->device, r->mesh_sampler);
     if (r->index_buffer) SDL_ReleaseGPUBuffer(r->device, r->index_buffer);
     if (r->depth_texture) SDL_ReleaseGPUTexture(r->device, r->depth_texture);
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {

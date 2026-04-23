@@ -16,6 +16,8 @@ glslc -fshader-stage=vertex shaders/overlay.vert.glsl -o shaders/overlay.vert.sp
 glslc -fshader-stage=fragment shaders/overlay.frag.glsl -o shaders/overlay.frag.spv
 glslc -fshader-stage=vertex shaders/wireframe.vert.glsl -o shaders/wireframe.vert.spv
 glslc -fshader-stage=fragment shaders/wireframe.frag.glsl -o shaders/wireframe.frag.spv
+glslc -fshader-stage=vertex shaders/mesh.vert.glsl -o shaders/mesh.vert.spv
+glslc -fshader-stage=fragment shaders/mesh.frag.glsl -o shaders/mesh.frag.spv
 
 # Build imgui static lib if missing
 if [ ! -f "$IMGUI_LIB" ]; then
