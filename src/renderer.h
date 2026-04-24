@@ -31,6 +31,7 @@ struct Renderer {
     SDL_GPUBuffer*          gaussian_buffer;
     SDL_GPUBuffer*          cube_vertex_buffer;
     SDL_GPUBuffer*          cube_index_buffer;
+    // TODO: generalize to support multiple loaded meshes (array/list of mesh objects)
     SDL_GPUBuffer*          mesh_vertex_buffer;
     SDL_GPUBuffer*          mesh_index_buffer;
     SDL_GPUTexture*         mesh_texture;

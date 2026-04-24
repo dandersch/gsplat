@@ -770,6 +770,7 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
 
         SDL_GPUBufferBinding mesh_ib_bind = {};
         mesh_ib_bind.buffer = r->mesh_index_buffer;
+        // TODO: 16-bit indices limit meshes to 65535 vertices — switch to 32-bit for loaded meshes
         SDL_BindGPUIndexBuffer(pass, &mesh_ib_bind, SDL_GPU_INDEXELEMENTSIZE_16BIT);
 
         // Bind checkerboard texture for textured meshes
