@@ -9,15 +9,19 @@
 
 #include "camera.cpp"
 #include "gaussian.cpp"
+#include "mesh.cpp"
 #include "renderer.cpp"
 #include "refview.cpp"
 
 int main(int argc, char* argv[]) {
     const char* ply_path = NULL;
     const char* colmap_dir = NULL;
+    const char* mesh_path = NULL;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--colmap") == 0 && i + 1 < argc) {
             colmap_dir = argv[++i];
+        } else if (strcmp(argv[i], "--mesh") == 0 && i + 1 < argc) {
+            mesh_path = argv[++i];
         } else if (!ply_path) {
             ply_path = argv[i];
         }
@@ -70,6 +74,16 @@ int main(int argc, char* argv[]) {
         scene_loaded = load_ply(ply_path, &scene);
         if (scene_loaded) {
             renderer_upload_gaussians(&renderer, &scene);
+        }
+    }
+
+    // Mesh
+    Mesh mesh = {};
+    if (mesh_path) {
+        if (mesh_load_obj(mesh_path, &mesh)) {
+            renderer_upload_mesh(&renderer, mesh.vertices, mesh.vertex_count,
+                                 mesh.indices, mesh.index_count,
+                                 mesh.tex_rgba, mesh.tex_w, mesh.tex_h);
         }
     }
 
@@ -435,6 +449,7 @@ int main(int argc, char* argv[]) {
     SDL_WaitForGPUIdle(device);
 
     if (scene_loaded) free_scene(&scene);
+    if (mesh_path) mesh_free(&mesh);
     if (refviews_loaded) {
         refview_release_images(&refviews, device);
         refview_free(&refviews);

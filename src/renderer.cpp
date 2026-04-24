@@ -341,6 +341,7 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
     mesh_pipeline_info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     mesh_pipeline_info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
     mesh_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
+    mesh_pipeline_info.rasterizer_state.front_face = SDL_GPU_FRONTFACE_CLOCKWISE;
     mesh_pipeline_info.vertex_input_state.num_vertex_buffers = 1;
     mesh_pipeline_info.vertex_input_state.vertex_buffer_descriptions = &mesh_vb_desc;
     mesh_pipeline_info.vertex_input_state.num_vertex_attributes = 2;
@@ -424,156 +425,16 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
     SDL_WaitForGPUIdle(device);
     SDL_ReleaseGPUTransferBuffer(device, cube_xfer);
 
-    // Upload mesh cube geometry (per-face vertices with UVs, 4 verts per face × 6 faces = 24)
-    // Each vertex: vec3 position, vec2 uv
-    float mesh_verts[24 * 5] = {
-        // back face (-Z)
-        -0.5f, -0.5f, -0.5f,  0.0f, 0.0f,
-         0.5f, -0.5f, -0.5f,  1.0f, 0.0f,
-         0.5f,  0.5f, -0.5f,  1.0f, 1.0f,
-        -0.5f,  0.5f, -0.5f,  0.0f, 1.0f,
-        // front face (+Z)
-        -0.5f, -0.5f,  0.5f,  0.0f, 0.0f,
-         0.5f, -0.5f,  0.5f,  1.0f, 0.0f,
-         0.5f,  0.5f,  0.5f,  1.0f, 1.0f,
-        -0.5f,  0.5f,  0.5f,  0.0f, 1.0f,
-        // right face (+X)
-         0.5f, -0.5f, -0.5f,  0.0f, 0.0f,
-         0.5f, -0.5f,  0.5f,  1.0f, 0.0f,
-         0.5f,  0.5f,  0.5f,  1.0f, 1.0f,
-         0.5f,  0.5f, -0.5f,  0.0f, 1.0f,
-        // left face (-X)
-        -0.5f, -0.5f,  0.5f,  0.0f, 0.0f,
-        -0.5f, -0.5f, -0.5f,  1.0f, 0.0f,
-        -0.5f,  0.5f, -0.5f,  1.0f, 1.0f,
-        -0.5f,  0.5f,  0.5f,  0.0f, 1.0f,
-        // top face (+Y)
-        -0.5f,  0.5f, -0.5f,  0.0f, 0.0f,
-         0.5f,  0.5f, -0.5f,  1.0f, 0.0f,
-         0.5f,  0.5f,  0.5f,  1.0f, 1.0f,
-        -0.5f,  0.5f,  0.5f,  0.0f, 1.0f,
-        // bottom face (-Y)
-        -0.5f, -0.5f,  0.5f,  0.0f, 0.0f,
-         0.5f, -0.5f,  0.5f,  1.0f, 0.0f,
-         0.5f, -0.5f, -0.5f,  1.0f, 1.0f,
-        -0.5f, -0.5f, -0.5f,  0.0f, 1.0f,
-    };
-    uint16_t mesh_indices[36] = {
-         0, 2, 1,   0, 3, 2,  // back
-         4, 5, 6,   4, 6, 7,  // front
-         8,10, 9,   8,11,10,  // right
-        12,14,13,  12,15,14,  // left
-        16,18,17,  16,19,18,  // top
-        20,22,21,  20,23,22,  // bottom
-    };
+    r->mesh_index_count = 0;
 
-    uint32_t mesh_vb_size = sizeof(mesh_verts);
-    uint32_t mesh_ib_size = sizeof(mesh_indices);
-
-    SDL_GPUBufferCreateInfo mesh_vb_info = {};
-    mesh_vb_info.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
-    mesh_vb_info.size = mesh_vb_size;
-    r->mesh_vertex_buffer = SDL_CreateGPUBuffer(device, &mesh_vb_info);
-
-    SDL_GPUBufferCreateInfo mesh_ib_info = {};
-    mesh_ib_info.usage = SDL_GPU_BUFFERUSAGE_INDEX;
-    mesh_ib_info.size = mesh_ib_size;
-    r->mesh_index_buffer = SDL_CreateGPUBuffer(device, &mesh_ib_info);
-
-    SDL_GPUTransferBufferCreateInfo mesh_xfer_info = {};
-    mesh_xfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-    mesh_xfer_info.size = mesh_vb_size + mesh_ib_size;
-    SDL_GPUTransferBuffer* mesh_xfer = SDL_CreateGPUTransferBuffer(device, &mesh_xfer_info);
-
-    void* mesh_map = SDL_MapGPUTransferBuffer(device, mesh_xfer, false);
-    memcpy(mesh_map, mesh_verts, mesh_vb_size);
-    memcpy((uint8_t*)mesh_map + mesh_vb_size, mesh_indices, mesh_ib_size);
-    SDL_UnmapGPUTransferBuffer(device, mesh_xfer);
-
-    SDL_GPUCommandBuffer* mesh_cmd = SDL_AcquireGPUCommandBuffer(device);
-    SDL_GPUCopyPass* mesh_copy = SDL_BeginGPUCopyPass(mesh_cmd);
-
-    SDL_GPUTransferBufferLocation mesh_src = {};
-    mesh_src.transfer_buffer = mesh_xfer;
-    mesh_src.offset = 0;
-    SDL_GPUBufferRegion mesh_vb_dst = {};
-    mesh_vb_dst.buffer = r->mesh_vertex_buffer;
-    mesh_vb_dst.size = mesh_vb_size;
-    SDL_UploadToGPUBuffer(mesh_copy, &mesh_src, &mesh_vb_dst, false);
-
-    mesh_src.offset = mesh_vb_size;
-    SDL_GPUBufferRegion mesh_ib_dst = {};
-    mesh_ib_dst.buffer = r->mesh_index_buffer;
-    mesh_ib_dst.size = mesh_ib_size;
-    SDL_UploadToGPUBuffer(mesh_copy, &mesh_src, &mesh_ib_dst, false);
-
-    SDL_EndGPUCopyPass(mesh_copy);
-    SDL_SubmitGPUCommandBuffer(mesh_cmd);
-    SDL_WaitForGPUIdle(device);
-    SDL_ReleaseGPUTransferBuffer(device, mesh_xfer);
-
-    // Create 8×8 checkerboard test texture (RGBA8)
-    {
-        const int TEX_SIZE = 8;
-        uint8_t tex_pixels[TEX_SIZE * TEX_SIZE * 4];
-        for (int y = 0; y < TEX_SIZE; y++) {
-            for (int x = 0; x < TEX_SIZE; x++) {
-                bool white = ((x + y) % 2) == 0;
-                int idx = (y * TEX_SIZE + x) * 4;
-                tex_pixels[idx + 0] = white ? 255 : 50;
-                tex_pixels[idx + 1] = white ? 255 : 50;
-                tex_pixels[idx + 2] = white ? 255 : 50;
-                tex_pixels[idx + 3] = 255;
-            }
-        }
-
-        SDL_GPUTextureCreateInfo tex_info = {};
-        tex_info.type = SDL_GPU_TEXTURETYPE_2D;
-        tex_info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-        tex_info.width = TEX_SIZE;
-        tex_info.height = TEX_SIZE;
-        tex_info.layer_count_or_depth = 1;
-        tex_info.num_levels = 1;
-        tex_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
-        r->mesh_texture = SDL_CreateGPUTexture(device, &tex_info);
-
-        SDL_GPUTransferBufferCreateInfo tex_xfer_info = {};
-        tex_xfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-        tex_xfer_info.size = sizeof(tex_pixels);
-        SDL_GPUTransferBuffer* tex_xfer = SDL_CreateGPUTransferBuffer(device, &tex_xfer_info);
-
-        void* tex_map = SDL_MapGPUTransferBuffer(device, tex_xfer, false);
-        memcpy(tex_map, tex_pixels, sizeof(tex_pixels));
-        SDL_UnmapGPUTransferBuffer(device, tex_xfer);
-
-        SDL_GPUCommandBuffer* tex_cmd = SDL_AcquireGPUCommandBuffer(device);
-        SDL_GPUCopyPass* tex_copy = SDL_BeginGPUCopyPass(tex_cmd);
-
-        SDL_GPUTextureTransferInfo tex_src = {};
-        tex_src.transfer_buffer = tex_xfer;
-        tex_src.offset = 0;
-
-        SDL_GPUTextureRegion tex_dst = {};
-        tex_dst.texture = r->mesh_texture;
-        tex_dst.w = TEX_SIZE;
-        tex_dst.h = TEX_SIZE;
-        tex_dst.d = 1;
-
-        SDL_UploadToGPUTexture(tex_copy, &tex_src, &tex_dst, false);
-        SDL_EndGPUCopyPass(tex_copy);
-        SDL_SubmitGPUCommandBuffer(tex_cmd);
-        SDL_WaitForGPUIdle(device);
-        SDL_ReleaseGPUTransferBuffer(device, tex_xfer);
-
-        SDL_GPUSamplerCreateInfo mesh_sampler_info = {};
-        mesh_sampler_info.min_filter = SDL_GPU_FILTER_NEAREST;
-        mesh_sampler_info.mag_filter = SDL_GPU_FILTER_NEAREST;
-        mesh_sampler_info.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
-        mesh_sampler_info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
-        mesh_sampler_info.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
-        mesh_sampler_info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
-        r->mesh_sampler = SDL_CreateGPUSampler(device, &mesh_sampler_info);
-    }
+    SDL_GPUSamplerCreateInfo mesh_sampler_info = {};
+    mesh_sampler_info.min_filter = SDL_GPU_FILTER_NEAREST;
+    mesh_sampler_info.mag_filter = SDL_GPU_FILTER_NEAREST;
+    mesh_sampler_info.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+    mesh_sampler_info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+    mesh_sampler_info.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+    mesh_sampler_info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+    r->mesh_sampler = SDL_CreateGPUSampler(device, &mesh_sampler_info);
 
     fprintf(stderr, "Renderer init OK\n");
     return true;
@@ -646,6 +507,112 @@ void renderer_upload_gaussians(Renderer* r, const GaussianScene* scene) {
     SDL_ReleaseGPUTransferBuffer(r->device, upload_xfer);
 
     fprintf(stderr, "Uploaded %u gaussians\n", scene->gaussian_count);
+}
+
+bool renderer_upload_mesh(Renderer* r, const float* verts, uint32_t vert_count,
+                          const uint32_t* indices, uint32_t index_count,
+                          const uint8_t* tex_rgba, uint32_t tex_w, uint32_t tex_h) {
+    // Release old mesh buffers if any
+    if (r->mesh_vertex_buffer) { SDL_ReleaseGPUBuffer(r->device, r->mesh_vertex_buffer); r->mesh_vertex_buffer = NULL; }
+    if (r->mesh_index_buffer)  { SDL_ReleaseGPUBuffer(r->device, r->mesh_index_buffer);  r->mesh_index_buffer = NULL; }
+    if (r->mesh_texture)       { SDL_ReleaseGPUTexture(r->device, r->mesh_texture);      r->mesh_texture = NULL; }
+    r->mesh_index_count = 0;
+
+    uint32_t vb_size = vert_count * 5 * sizeof(float); // vec3 pos + vec2 uv
+    uint32_t ib_size = index_count * sizeof(uint32_t);
+
+    SDL_GPUBufferCreateInfo vb_info = {};
+    vb_info.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
+    vb_info.size = vb_size;
+    r->mesh_vertex_buffer = SDL_CreateGPUBuffer(r->device, &vb_info);
+
+    SDL_GPUBufferCreateInfo ib_info = {};
+    ib_info.usage = SDL_GPU_BUFFERUSAGE_INDEX;
+    ib_info.size = ib_size;
+    r->mesh_index_buffer = SDL_CreateGPUBuffer(r->device, &ib_info);
+
+    if (!r->mesh_vertex_buffer || !r->mesh_index_buffer) {
+        fprintf(stderr, "FAIL: mesh buffer creation\n");
+        return false;
+    }
+
+    // Upload vertex + index data
+    SDL_GPUTransferBufferCreateInfo xfer_info = {};
+    xfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    xfer_info.size = vb_size + ib_size;
+    SDL_GPUTransferBuffer* xfer = SDL_CreateGPUTransferBuffer(r->device, &xfer_info);
+
+    void* map = SDL_MapGPUTransferBuffer(r->device, xfer, false);
+    memcpy(map, verts, vb_size);
+    memcpy((uint8_t*)map + vb_size, indices, ib_size);
+    SDL_UnmapGPUTransferBuffer(r->device, xfer);
+
+    SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(r->device);
+    SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);
+
+    SDL_GPUTransferBufferLocation src = {};
+    src.transfer_buffer = xfer;
+    src.offset = 0;
+    SDL_GPUBufferRegion vb_dst = {};
+    vb_dst.buffer = r->mesh_vertex_buffer;
+    vb_dst.size = vb_size;
+    SDL_UploadToGPUBuffer(copy, &src, &vb_dst, false);
+
+    src.offset = vb_size;
+    SDL_GPUBufferRegion ib_dst = {};
+    ib_dst.buffer = r->mesh_index_buffer;
+    ib_dst.size = ib_size;
+    SDL_UploadToGPUBuffer(copy, &src, &ib_dst, false);
+
+    // Upload texture if provided
+    if (tex_rgba && tex_w > 0 && tex_h > 0) {
+        SDL_GPUTextureCreateInfo tex_info = {};
+        tex_info.type = SDL_GPU_TEXTURETYPE_2D;
+        tex_info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        tex_info.width = tex_w;
+        tex_info.height = tex_h;
+        tex_info.layer_count_or_depth = 1;
+        tex_info.num_levels = 1;
+        tex_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        r->mesh_texture = SDL_CreateGPUTexture(r->device, &tex_info);
+
+        uint32_t tex_size = tex_w * tex_h * 4;
+        SDL_GPUTransferBufferCreateInfo tex_xfer_info = {};
+        tex_xfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+        tex_xfer_info.size = tex_size;
+        SDL_GPUTransferBuffer* tex_xfer = SDL_CreateGPUTransferBuffer(r->device, &tex_xfer_info);
+
+        void* tex_map = SDL_MapGPUTransferBuffer(r->device, tex_xfer, false);
+        memcpy(tex_map, tex_rgba, tex_size);
+        SDL_UnmapGPUTransferBuffer(r->device, tex_xfer);
+
+        SDL_GPUTextureTransferInfo tex_src = {};
+        tex_src.transfer_buffer = tex_xfer;
+        SDL_GPUTextureRegion tex_dst = {};
+        tex_dst.texture = r->mesh_texture;
+        tex_dst.w = tex_w;
+        tex_dst.h = tex_h;
+        tex_dst.d = 1;
+        SDL_UploadToGPUTexture(copy, &tex_src, &tex_dst, false);
+
+        SDL_EndGPUCopyPass(copy);
+        SDL_SubmitGPUCommandBuffer(cmd);
+        SDL_WaitForGPUIdle(r->device);
+        SDL_ReleaseGPUTransferBuffer(r->device, tex_xfer);
+    } else {
+        SDL_EndGPUCopyPass(copy);
+        SDL_SubmitGPUCommandBuffer(cmd);
+        SDL_WaitForGPUIdle(r->device);
+    }
+
+    SDL_ReleaseGPUTransferBuffer(r->device, xfer);
+    r->mesh_index_count = index_count;
+
+    fprintf(stderr, "Uploaded mesh: %u verts, %u indices", vert_count, index_count);
+    if (tex_rgba) fprintf(stderr, ", %ux%u texture", tex_w, tex_h);
+    fprintf(stderr, "\n");
+
+    return true;
 }
 
 // Multiply two column-major 4x4 matrices: out = a * b
@@ -760,8 +727,8 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
         return;
     }
 
-    // Mesh test cubes (drawn before splats, writes depth so splats depth-test against it)
-    if (r->mesh_pipeline && r->mesh_vertex_buffer && r->mesh_index_buffer) {
+    // Mesh (drawn before splats, writes depth so splats depth-test against it)
+    if (r->mesh_pipeline && r->mesh_vertex_buffer && r->mesh_index_buffer && r->mesh_index_count > 0) {
         SDL_BindGPUGraphicsPipeline(pass, r->mesh_pipeline);
 
         SDL_GPUBufferBinding mesh_vb_bind = {};
@@ -771,9 +738,8 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
         SDL_GPUBufferBinding mesh_ib_bind = {};
         mesh_ib_bind.buffer = r->mesh_index_buffer;
         // TODO: 16-bit indices limit meshes to 65535 vertices — switch to 32-bit for loaded meshes
-        SDL_BindGPUIndexBuffer(pass, &mesh_ib_bind, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+        SDL_BindGPUIndexBuffer(pass, &mesh_ib_bind, SDL_GPU_INDEXELEMENTSIZE_32BIT);
 
-        // Bind checkerboard texture for textured meshes
         SDL_GPUTextureSamplerBinding mesh_tex_bind = {};
         mesh_tex_bind.texture = r->mesh_texture;
         mesh_tex_bind.sampler = r->mesh_sampler;
@@ -797,25 +763,14 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
         struct { float mvp[16]; float color[4]; float use_texture; float _pad[3]; } mesh_uniforms;
         memcpy(mesh_uniforms.mvp, mvp, sizeof(mvp));
         mesh_uniforms.color[0] = 1.0f;
-        mesh_uniforms.color[1] = 0.3f;
-        mesh_uniforms.color[2] = 0.1f;
+        mesh_uniforms.color[1] = 1.0f;
+        mesh_uniforms.color[2] = 1.0f;
         mesh_uniforms.color[3] = 1.0f;
-        mesh_uniforms.use_texture = 1.0f;
+        mesh_uniforms.use_texture = (r->mesh_texture != NULL) ? 1.0f : 0.0f;
         mesh_uniforms._pad[0] = mesh_uniforms._pad[1] = mesh_uniforms._pad[2] = 0.0f;
 
         SDL_PushGPUVertexUniformData(cmd, 0, &mesh_uniforms, sizeof(mesh_uniforms));
-        SDL_DrawGPUIndexedPrimitives(pass, 36, 1, 0, 0, 0);
-
-        // Second test cube outside the scene (flat colored, no texture)
-        mat4_translate_scale(-4.0f, 0.0f, -18.0f, 2.0f, model);
-        mat4_mul(vp, model, mvp);
-        memcpy(mesh_uniforms.mvp, mvp, sizeof(mvp));
-        mesh_uniforms.color[0] = 0.1f;
-        mesh_uniforms.color[1] = 1.0f;
-        mesh_uniforms.color[2] = 0.3f;
-        mesh_uniforms.use_texture = 0.0f;
-        SDL_PushGPUVertexUniformData(cmd, 0, &mesh_uniforms, sizeof(mesh_uniforms));
-        SDL_DrawGPUIndexedPrimitives(pass, 36, 1, 0, 0, 0);
+        SDL_DrawGPUIndexedPrimitives(pass, r->mesh_index_count, 1, 0, 0, 0);
     }
 
     // Draw gaussians (alpha accumulation scaled by wireframe_occlusion blend constant)

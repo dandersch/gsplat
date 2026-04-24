@@ -36,6 +36,6 @@ if [ ! -f "$IMGUI_LIB" ]; then
 fi
 
 echo "Building $OUT..."
-$CXX $CXXFLAGS -I"$IMGUI_DIR" -I"$IMGUI_DIR/backends" src/main.cpp -o "$OUT" "$IMGUI_LIB" $LDFLAGS
+$CXX $CXXFLAGS -I"$IMGUI_DIR" -I"$IMGUI_DIR/backends" -Ithird_party src/main.cpp -o "$OUT" "$IMGUI_LIB" $LDFLAGS
 
 echo "Done: ./$OUT"

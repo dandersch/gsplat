@@ -36,6 +36,7 @@ struct Renderer {
     SDL_GPUBuffer*          mesh_index_buffer;
     SDL_GPUTexture*         mesh_texture;
     SDL_GPUSampler*         mesh_sampler;
+    uint32_t                mesh_index_count;
     SDL_GPUBuffer*          index_buffer;
     SDL_GPUTexture*         depth_texture;
     uint32_t                depth_w, depth_h;
@@ -48,5 +49,6 @@ struct Renderer {
 
 bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window);
 void renderer_upload_gaussians(Renderer* r, const GaussianScene* scene);
+bool renderer_upload_mesh(Renderer* r, const float* verts, uint32_t vert_count, const uint32_t* indices, uint32_t index_count, const uint8_t* tex_rgba, uint32_t tex_w, uint32_t tex_h);
 void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUniforms* cam, const OverlayParams* overlay, const NodeRenderParams* nodes, float wireframe_occlusion = 1.0f);
 void renderer_destroy(Renderer* r);
