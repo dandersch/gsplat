@@ -92,13 +92,15 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
     pipeline_info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     pipeline_info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
     pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+    // Splats only test depth (against the mesh, so they don't poke through it
+    // from behind), they do not write depth or stencil.
     pipeline_info.depth_stencil_state.enable_depth_test = true;
     pipeline_info.depth_stencil_state.enable_depth_write = false;
     pipeline_info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS;
     pipeline_info.target_info.num_color_targets = 1;
     pipeline_info.target_info.color_target_descriptions = &color_target;
     pipeline_info.target_info.has_depth_stencil_target = true;
-    pipeline_info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D16_UNORM;
+    pipeline_info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT;
 
     r->splat_pipeline = SDL_CreateGPUGraphicsPipeline(device, &pipeline_info);
     SDL_ReleaseGPUShader(device, vert_shader);
@@ -165,10 +167,20 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
     ov_pipeline_info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     ov_pipeline_info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
     ov_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+    // Stencil: only draw where stencil != 1 (i.e. NOT inside the mesh
+    // silhouette). Inside the mesh region, the mesh + splat composite stays.
+    ov_pipeline_info.depth_stencil_state.enable_stencil_test = true;
+    ov_pipeline_info.depth_stencil_state.compare_mask = 0xFF;
+    ov_pipeline_info.depth_stencil_state.write_mask = 0x00;
+    ov_pipeline_info.depth_stencil_state.front_stencil_state.compare_op = SDL_GPU_COMPAREOP_NOT_EQUAL;
+    ov_pipeline_info.depth_stencil_state.front_stencil_state.pass_op = SDL_GPU_STENCILOP_KEEP;
+    ov_pipeline_info.depth_stencil_state.front_stencil_state.fail_op = SDL_GPU_STENCILOP_KEEP;
+    ov_pipeline_info.depth_stencil_state.front_stencil_state.depth_fail_op = SDL_GPU_STENCILOP_KEEP;
+    ov_pipeline_info.depth_stencil_state.back_stencil_state = ov_pipeline_info.depth_stencil_state.front_stencil_state;
     ov_pipeline_info.target_info.num_color_targets = 1;
     ov_pipeline_info.target_info.color_target_descriptions = &ov_color_target;
     ov_pipeline_info.target_info.has_depth_stencil_target = true;
-    ov_pipeline_info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D16_UNORM;
+    ov_pipeline_info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT;
 
     r->overlay_pipeline = SDL_CreateGPUGraphicsPipeline(device, &ov_pipeline_info);
     SDL_ReleaseGPUShader(device, ov_vert);
@@ -262,7 +274,7 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
     wf_pipeline_info.target_info.num_color_targets = 1;
     wf_pipeline_info.target_info.color_target_descriptions = &wf_color_target;
     wf_pipeline_info.target_info.has_depth_stencil_target = true;
-    wf_pipeline_info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D16_UNORM;
+    wf_pipeline_info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT;
 
     r->wireframe_pipeline = SDL_CreateGPUGraphicsPipeline(device, &wf_pipeline_info);
 
@@ -349,10 +361,20 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
     mesh_pipeline_info.depth_stencil_state.enable_depth_test = true;
     mesh_pipeline_info.depth_stencil_state.enable_depth_write = true;
     mesh_pipeline_info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS;
+    // Stencil: every mesh pixel writes 1, marking "this is the mesh region".
+    // The overlay pass will draw only where stencil != 1.
+    mesh_pipeline_info.depth_stencil_state.enable_stencil_test = true;
+    mesh_pipeline_info.depth_stencil_state.write_mask = 0xFF;
+    mesh_pipeline_info.depth_stencil_state.compare_mask = 0xFF;
+    mesh_pipeline_info.depth_stencil_state.front_stencil_state.compare_op = SDL_GPU_COMPAREOP_ALWAYS;
+    mesh_pipeline_info.depth_stencil_state.front_stencil_state.pass_op = SDL_GPU_STENCILOP_REPLACE;
+    mesh_pipeline_info.depth_stencil_state.front_stencil_state.fail_op = SDL_GPU_STENCILOP_KEEP;
+    mesh_pipeline_info.depth_stencil_state.front_stencil_state.depth_fail_op = SDL_GPU_STENCILOP_KEEP;
+    mesh_pipeline_info.depth_stencil_state.back_stencil_state = mesh_pipeline_info.depth_stencil_state.front_stencil_state;
     mesh_pipeline_info.target_info.num_color_targets = 1;
     mesh_pipeline_info.target_info.color_target_descriptions = &mesh_color_target;
     mesh_pipeline_info.target_info.has_depth_stencil_target = true;
-    mesh_pipeline_info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D16_UNORM;
+    mesh_pipeline_info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT;
 
     r->mesh_pipeline = SDL_CreateGPUGraphicsPipeline(device, &mesh_pipeline_info);
     SDL_ReleaseGPUShader(device, mesh_vs);
@@ -694,7 +716,7 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
         if (r->depth_texture) SDL_ReleaseGPUTexture(r->device, r->depth_texture);
         SDL_GPUTextureCreateInfo depth_tex_info = {};
         depth_tex_info.type = SDL_GPU_TEXTURETYPE_2D;
-        depth_tex_info.format = SDL_GPU_TEXTUREFORMAT_D16_UNORM;
+        depth_tex_info.format = SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT;
         depth_tex_info.width = sw_w;
         depth_tex_info.height = sw_h;
         depth_tex_info.layer_count_or_depth = 1;
@@ -718,7 +740,10 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
     depth_target.texture = r->depth_texture;
     depth_target.load_op = SDL_GPU_LOADOP_CLEAR;
     depth_target.store_op = SDL_GPU_STOREOP_DONT_CARE;
+    depth_target.stencil_load_op = SDL_GPU_LOADOP_CLEAR;
+    depth_target.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
     depth_target.clear_depth = 1.0f;
+    depth_target.clear_stencil = 0;
     depth_target.cycle = true;
 
     SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &color_target, 1, &depth_target);
@@ -727,9 +752,16 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
         return;
     }
 
-    // Mesh (drawn before splats, writes depth so splats depth-test against it)
-    if (r->mesh_pipeline && r->mesh_vertex_buffer && r->mesh_index_buffer && r->mesh_index_count > 0) {
+    // Mesh: writes color, depth, and stencil=1 to mark its silhouette.
+    // Splats then blend on top within the silhouette (and elsewhere). The
+    // overlay later stencil-tests against != 1, so it only fills non-mesh
+    // pixels — leaving mesh+splat composite visible inside the silhouette.
+    bool draw_mesh = r->mesh_pipeline && r->mesh_vertex_buffer && r->mesh_index_buffer && r->mesh_index_count > 0;
+    if (draw_mesh) {
         SDL_BindGPUGraphicsPipeline(pass, r->mesh_pipeline);
+        // Stencil reference 1: mesh marks its silhouette so the overlay pass
+        // can avoid drawing on top of it.
+        SDL_SetGPUStencilReference(pass, 1);
 
         SDL_GPUBufferBinding mesh_vb_bind = {};
         mesh_vb_bind.buffer = r->mesh_vertex_buffer;
@@ -787,9 +819,13 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
         SDL_DrawGPUPrimitives(pass, 6, scene->visible_count, 0, 0);
     }
 
-    // Overlay (equirectangular panorama, no depth test/write — drawn over splats)
+    // Overlay (equirectangular panorama). Stencil-tested: only draws where
+    // stencil != 1, i.e. NOT inside the mesh silhouette. The mesh + splat
+    // composite stays visible inside the silhouette, giving the illusion that
+    // the mesh sits "in" the photo.
     if (overlay && overlay->texture && overlay->alpha > 0.0f && r->overlay_pipeline) {
         SDL_BindGPUGraphicsPipeline(pass, r->overlay_pipeline);
+        SDL_SetGPUStencilReference(pass, 1);
 
         SDL_GPUTextureSamplerBinding sampler_binding = {};
         sampler_binding.texture = overlay->texture;
