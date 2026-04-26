@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <cmath>
+#include "stb_image.h"
 
 // Skip the rest of the current line (handles arbitrarily long POINTS2D lines)
 static void skip_line(FILE* f) {
@@ -203,20 +204,15 @@ void refview_load_covisibility(RefViewSet* set, const char* colmap_dir) {
 }
 
 struct ImageLoadTask {
-    char      path[768];
-    SDL_Surface* result;  // NULL on failure
+    char     path[768];
+    uint8_t* pixels;  // RGBA8, NULL on failure; free with stbi_image_free
+    int      w, h;
 };
 
 static int image_load_thread(void* data) {
     ImageLoadTask* task = (ImageLoadTask*)data;
-    SDL_Surface* surface = SDL_LoadBMP(task->path);
-    if (!surface) surface = SDL_LoadPNG(task->path);
-    if (!surface) {
-        task->result = NULL;
-        return 0;
-    }
-    task->result = SDL_ConvertSurface(surface, SDL_PIXELFORMAT_ABGR8888);
-    SDL_DestroySurface(surface);
+    int channels;
+    task->pixels = stbi_load(task->path, &task->w, &task->h, &channels, 4);
     return 0;
 }
 
@@ -242,21 +238,23 @@ void refview_load_images(RefViewSet* set, SDL_GPUDevice* device) {
     for (uint32_t i = 0; i < set->count; i++) {
         SDL_WaitThread(threads[i], NULL);
         RefView* v = &set->views[i];
-        SDL_Surface* rgba = tasks[i].result;
+        uint8_t* pixels = tasks[i].pixels;
+        int img_w = tasks[i].w;
+        int img_h = tasks[i].h;
 
-        if (!rgba) {
+        if (!pixels) {
             SDL_Log("RefView: Could not load image %s", tasks[i].path);
             continue;
         }
 
-        v->width = rgba->w;
-        v->height = rgba->h;
+        v->width = img_w;
+        v->height = img_h;
 
         SDL_GPUTextureCreateInfo tex_info = {};
         tex_info.type = SDL_GPU_TEXTURETYPE_2D;
         tex_info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-        tex_info.width = rgba->w;
-        tex_info.height = rgba->h;
+        tex_info.width = img_w;
+        tex_info.height = img_h;
         tex_info.layer_count_or_depth = 1;
         tex_info.num_levels = 1;
         tex_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
@@ -264,11 +262,11 @@ void refview_load_images(RefViewSet* set, SDL_GPUDevice* device) {
         v->texture = SDL_CreateGPUTexture(device, &tex_info);
         if (!v->texture) {
             SDL_Log("RefView: Failed to create GPU texture for %s: %s", tasks[i].path, SDL_GetError());
-            SDL_DestroySurface(rgba);
+            stbi_image_free(pixels);
             continue;
         }
 
-        uint32_t data_size = rgba->w * rgba->h * 4;
+        uint32_t data_size = (uint32_t)(img_w * img_h * 4);
 
         SDL_GPUTransferBufferCreateInfo xfer_info = {};
         xfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
@@ -278,14 +276,14 @@ void refview_load_images(RefViewSet* set, SDL_GPUDevice* device) {
             SDL_Log("RefView: Failed to create transfer buffer for %s", tasks[i].path);
             SDL_ReleaseGPUTexture(device, v->texture);
             v->texture = NULL;
-            SDL_DestroySurface(rgba);
+            stbi_image_free(pixels);
             continue;
         }
 
         void* map = SDL_MapGPUTransferBuffer(device, xfer, false);
-        memcpy(map, rgba->pixels, data_size);
+        memcpy(map, pixels, data_size);
         SDL_UnmapGPUTransferBuffer(device, xfer);
-        SDL_DestroySurface(rgba);
+        stbi_image_free(pixels);
 
         SDL_GPUTextureTransferInfo src = {};
         src.transfer_buffer = xfer;

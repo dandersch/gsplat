@@ -9,7 +9,9 @@
 #define TINYOBJLOADER_IMPLEMENTATION
 #include "tiny_obj_loader.h"
 
-#include <SDL3/SDL.h>
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+#undef STB_IMAGE_IMPLEMENTATION
 
 bool mesh_load_obj(const char* obj_path, Mesh* mesh) {
     memset(mesh, 0, sizeof(*mesh));
@@ -44,24 +46,20 @@ bool mesh_load_obj(const char* obj_path, Mesh* mesh) {
         if (mat.diffuse_texname.empty()) continue;
 
         std::string tex_path = base_dir + mat.diffuse_texname;
-        SDL_Surface* surface = SDL_LoadBMP(tex_path.c_str());
-        if (!surface) surface = SDL_LoadPNG(tex_path.c_str());
-        if (!surface) {
-            fprintf(stderr, "Could not load texture: %s\n", tex_path.c_str());
+        int w, h, channels;
+        uint8_t* pixels = stbi_load(tex_path.c_str(), &w, &h, &channels, 4);
+        if (!pixels) {
+            fprintf(stderr, "Could not load texture: %s (%s)\n", tex_path.c_str(), stbi_failure_reason());
             continue;
         }
 
-        SDL_Surface* rgba = SDL_ConvertSurface(surface, SDL_PIXELFORMAT_ABGR8888);
-        SDL_DestroySurface(surface);
-        if (!rgba) continue;
-
         MeshTexture tex = {};
-        tex.w = rgba->w;
-        tex.h = rgba->h;
-        uint32_t tex_size = rgba->w * rgba->h * 4;
+        tex.w = (uint32_t)w;
+        tex.h = (uint32_t)h;
+        uint32_t tex_size = (uint32_t)(w * h * 4);
         tex.rgba = (uint8_t*)malloc(tex_size);
-        memcpy(tex.rgba, rgba->pixels, tex_size);
-        SDL_DestroySurface(rgba);
+        memcpy(tex.rgba, pixels, tex_size);
+        stbi_image_free(pixels);
 
         material_to_texture[mi] = (int32_t)loaded_textures.size();
         loaded_textures.push_back(tex);
