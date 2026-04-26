@@ -15,6 +15,12 @@ struct OverlayParams {
     float           alpha;
 };
 
+struct MeshTransform {
+    float translation[3];
+    float rotation_euler[3]; // radians, applied as Z * Y * X (intrinsic)
+    float scale;
+};
+
 struct NodeRenderParams {
     const float* positions;   // float[3] per node (world-space centers)
     uint32_t     count;
@@ -41,6 +47,7 @@ struct Renderer {
     SDL_GPUSampler*         mesh_sampler;
     MeshSubmesh*            mesh_submeshes;         // per-submesh draw ranges + texture id
     uint32_t                mesh_submesh_count;
+    MeshTransform           mesh_transform;         // translation/rotation/scale applied each frame
     SDL_GPUBuffer*          index_buffer;
     SDL_GPUTexture*         depth_texture;
     uint32_t                depth_w, depth_h;

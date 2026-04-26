@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 #include <vector>
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
@@ -40,6 +41,8 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
     r->mesh_sampler = NULL;
     r->mesh_submeshes = NULL;
     r->mesh_submesh_count = 0;
+    r->mesh_transform = {};
+    r->mesh_transform.scale = 1.0f;
     r->depth_texture = NULL;
     r->depth_w = 0;
     r->depth_h = 0;
@@ -703,6 +706,34 @@ static void mat4_translate_scale(float tx, float ty, float tz, float s, float* o
     out[15] = 1.0f;
 }
 
+// Build column-major model matrix: T * Rz * Ry * Rx * S (intrinsic Z-Y-X Euler).
+static void mat4_from_transform(const MeshTransform& t, float* out) {
+    float cx = cosf(t.rotation_euler[0]), sx = sinf(t.rotation_euler[0]);
+    float cy = cosf(t.rotation_euler[1]), sy = sinf(t.rotation_euler[1]);
+    float cz = cosf(t.rotation_euler[2]), sz = sinf(t.rotation_euler[2]);
+    float s = t.scale;
+
+    // Combined rotation R = Rz * Ry * Rx (row-major math, written into column-major)
+    float r00 = cy * cz;
+    float r01 = sx * sy * cz - cx * sz;
+    float r02 = cx * sy * cz + sx * sz;
+    float r10 = cy * sz;
+    float r11 = sx * sy * sz + cx * cz;
+    float r12 = cx * sy * sz - sx * cz;
+    float r20 = -sy;
+    float r21 = sx * cy;
+    float r22 = cx * cy;
+
+    // Column-major layout: out[col*4 + row]
+    out[0]  = r00 * s; out[1]  = r10 * s; out[2]  = r20 * s; out[3]  = 0.0f;
+    out[4]  = r01 * s; out[5]  = r11 * s; out[6]  = r21 * s; out[7]  = 0.0f;
+    out[8]  = r02 * s; out[9]  = r12 * s; out[10] = r22 * s; out[11] = 0.0f;
+    out[12] = t.translation[0];
+    out[13] = t.translation[1];
+    out[14] = t.translation[2];
+    out[15] = 1.0f;
+}
+
 void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUniforms* cam, const OverlayParams* overlay, const NodeRenderParams* nodes, float wireframe_occlusion) {
     // Get current frame's transfer buffer and fence
     uint32_t buf_idx = r->current_frame % MAX_FRAMES_IN_FLIGHT;
@@ -827,7 +858,7 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
         mat4_mul(cam->proj, view_corrected, vp);
 
         float model[16];
-        mat4_translate_scale(0.0f, 0.0f, 0.0f, 1.0f, model);
+        mat4_from_transform(r->mesh_transform, model);
 
         float mvp[16];
         mat4_mul(vp, model, mvp);

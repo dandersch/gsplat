@@ -347,6 +347,29 @@ int main(int argc, char* argv[]) {
             ImGui::End();
         }
 
+        if (mesh_path) {
+            ImGui::Begin("Mesh Transform");
+            MeshTransform& mt = renderer.mesh_transform;
+            ImGui::DragFloat3("Translation", mt.translation, 0.01f);
+            float rot_deg[3] = {
+                mt.rotation_euler[0] * 57.2957795f,
+                mt.rotation_euler[1] * 57.2957795f,
+                mt.rotation_euler[2] * 57.2957795f,
+            };
+            if (ImGui::DragFloat3("Rotation (deg)", rot_deg, 0.5f, -360.0f, 360.0f)) {
+                mt.rotation_euler[0] = rot_deg[0] * 0.0174532925f;
+                mt.rotation_euler[1] = rot_deg[1] * 0.0174532925f;
+                mt.rotation_euler[2] = rot_deg[2] * 0.0174532925f;
+            }
+            ImGui::DragFloat("Scale", &mt.scale, 0.01f, 0.001f, 1000.0f);
+            if (ImGui::Button("Reset")) {
+                mt.translation[0] = mt.translation[1] = mt.translation[2] = 0.0f;
+                mt.rotation_euler[0] = mt.rotation_euler[1] = mt.rotation_euler[2] = 0.0f;
+                mt.scale = 1.0f;
+            }
+            ImGui::End();
+        }
+
         // Draw crosshair in camera mode (highlight when aiming at a node)
         if (cam.camera_mode) {
             bool crosshair_hover = false;
