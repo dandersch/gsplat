@@ -81,9 +81,7 @@ int main(int argc, char* argv[]) {
     Mesh mesh = {};
     if (mesh_path) {
         if (mesh_load_obj(mesh_path, &mesh)) {
-            renderer_upload_mesh(&renderer, mesh.vertices, mesh.vertex_count,
-                                 mesh.indices, mesh.index_count,
-                                 mesh.tex_rgba, mesh.tex_w, mesh.tex_h);
+            renderer_upload_mesh(&renderer, &mesh);
         }
     }
 

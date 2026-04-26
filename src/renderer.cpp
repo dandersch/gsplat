@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_sdlgpu3.h"
@@ -33,8 +34,12 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
     r->mesh_pipeline = NULL;
     r->mesh_vertex_buffer = NULL;
     r->mesh_index_buffer = NULL;
-    r->mesh_texture = NULL;
+    r->mesh_textures = NULL;
+    r->mesh_texture_count = 0;
+    r->mesh_default_texture = NULL;
     r->mesh_sampler = NULL;
+    r->mesh_submeshes = NULL;
+    r->mesh_submesh_count = 0;
     r->depth_texture = NULL;
     r->depth_w = 0;
     r->depth_h = 0;
@@ -447,8 +452,6 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
     SDL_WaitForGPUIdle(device);
     SDL_ReleaseGPUTransferBuffer(device, cube_xfer);
 
-    r->mesh_index_count = 0;
-
     SDL_GPUSamplerCreateInfo mesh_sampler_info = {};
     mesh_sampler_info.min_filter = SDL_GPU_FILTER_NEAREST;
     mesh_sampler_info.mag_filter = SDL_GPU_FILTER_NEAREST;
@@ -531,15 +534,24 @@ void renderer_upload_gaussians(Renderer* r, const GaussianScene* scene) {
     fprintf(stderr, "Uploaded %u gaussians\n", scene->gaussian_count);
 }
 
-bool renderer_upload_mesh(Renderer* r, const float* verts, uint32_t vert_count,
-                          const uint32_t* indices, uint32_t index_count,
-                          const uint8_t* tex_rgba, uint32_t tex_w, uint32_t tex_h) {
-    // Release old mesh buffers if any
+bool renderer_upload_mesh(Renderer* r, const Mesh* mesh) {
+    // Release old mesh buffers/textures if any
     if (r->mesh_vertex_buffer) { SDL_ReleaseGPUBuffer(r->device, r->mesh_vertex_buffer); r->mesh_vertex_buffer = NULL; }
     if (r->mesh_index_buffer)  { SDL_ReleaseGPUBuffer(r->device, r->mesh_index_buffer);  r->mesh_index_buffer = NULL; }
-    if (r->mesh_texture)       { SDL_ReleaseGPUTexture(r->device, r->mesh_texture);      r->mesh_texture = NULL; }
-    r->mesh_index_count = 0;
+    if (r->mesh_textures) {
+        for (uint32_t i = 0; i < r->mesh_texture_count; ++i) {
+            if (r->mesh_textures[i]) SDL_ReleaseGPUTexture(r->device, r->mesh_textures[i]);
+        }
+        free(r->mesh_textures);
+        r->mesh_textures = NULL;
+    }
+    r->mesh_texture_count = 0;
+    if (r->mesh_default_texture) { SDL_ReleaseGPUTexture(r->device, r->mesh_default_texture); r->mesh_default_texture = NULL; }
+    if (r->mesh_submeshes) { free(r->mesh_submeshes); r->mesh_submeshes = NULL; }
+    r->mesh_submesh_count = 0;
 
+    uint32_t vert_count  = mesh->vertex_count;
+    uint32_t index_count = mesh->index_count;
     uint32_t vb_size = vert_count * 5 * sizeof(float); // vec3 pos + vec2 uv
     uint32_t ib_size = index_count * sizeof(uint32_t);
 
@@ -558,15 +570,34 @@ bool renderer_upload_mesh(Renderer* r, const float* verts, uint32_t vert_count,
         return false;
     }
 
-    // Upload vertex + index data
+    // Compute total size needed in transfer buffer (geometry + all textures + 1x1 default)
+    uint32_t geom_xfer_size = vb_size + ib_size;
+    uint32_t tex_xfer_size = 4; // 1x1 white default
+    for (uint32_t i = 0; i < mesh->texture_count; ++i) {
+        tex_xfer_size += mesh->textures[i].w * mesh->textures[i].h * 4;
+    }
+
     SDL_GPUTransferBufferCreateInfo xfer_info = {};
     xfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-    xfer_info.size = vb_size + ib_size;
+    xfer_info.size = geom_xfer_size + tex_xfer_size;
     SDL_GPUTransferBuffer* xfer = SDL_CreateGPUTransferBuffer(r->device, &xfer_info);
 
-    void* map = SDL_MapGPUTransferBuffer(r->device, xfer, false);
-    memcpy(map, verts, vb_size);
-    memcpy((uint8_t*)map + vb_size, indices, ib_size);
+    uint8_t* map = (uint8_t*)SDL_MapGPUTransferBuffer(r->device, xfer, false);
+    memcpy(map, mesh->vertices, vb_size);
+    memcpy(map + vb_size, mesh->indices, ib_size);
+    // 1x1 white pixel at offset geom_xfer_size
+    uint32_t cursor = geom_xfer_size;
+    map[cursor + 0] = 255; map[cursor + 1] = 255; map[cursor + 2] = 255; map[cursor + 3] = 255;
+    uint32_t default_tex_offset = cursor;
+    cursor += 4;
+    // Per-texture offsets
+    std::vector<uint32_t> tex_offsets(mesh->texture_count);
+    for (uint32_t i = 0; i < mesh->texture_count; ++i) {
+        tex_offsets[i] = cursor;
+        uint32_t sz = mesh->textures[i].w * mesh->textures[i].h * 4;
+        memcpy(map + cursor, mesh->textures[i].rgba, sz);
+        cursor += sz;
+    }
     SDL_UnmapGPUTransferBuffer(r->device, xfer);
 
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(r->device);
@@ -586,53 +617,67 @@ bool renderer_upload_mesh(Renderer* r, const float* verts, uint32_t vert_count,
     ib_dst.size = ib_size;
     SDL_UploadToGPUBuffer(copy, &src, &ib_dst, false);
 
-    // Upload texture if provided
-    if (tex_rgba && tex_w > 0 && tex_h > 0) {
+    // Create + upload 1x1 white default texture
+    {
         SDL_GPUTextureCreateInfo tex_info = {};
         tex_info.type = SDL_GPU_TEXTURETYPE_2D;
         tex_info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-        tex_info.width = tex_w;
-        tex_info.height = tex_h;
+        tex_info.width = 1;
+        tex_info.height = 1;
         tex_info.layer_count_or_depth = 1;
         tex_info.num_levels = 1;
         tex_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
-        r->mesh_texture = SDL_CreateGPUTexture(r->device, &tex_info);
-
-        uint32_t tex_size = tex_w * tex_h * 4;
-        SDL_GPUTransferBufferCreateInfo tex_xfer_info = {};
-        tex_xfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-        tex_xfer_info.size = tex_size;
-        SDL_GPUTransferBuffer* tex_xfer = SDL_CreateGPUTransferBuffer(r->device, &tex_xfer_info);
-
-        void* tex_map = SDL_MapGPUTransferBuffer(r->device, tex_xfer, false);
-        memcpy(tex_map, tex_rgba, tex_size);
-        SDL_UnmapGPUTransferBuffer(r->device, tex_xfer);
+        r->mesh_default_texture = SDL_CreateGPUTexture(r->device, &tex_info);
 
         SDL_GPUTextureTransferInfo tex_src = {};
-        tex_src.transfer_buffer = tex_xfer;
+        tex_src.transfer_buffer = xfer;
+        tex_src.offset = default_tex_offset;
         SDL_GPUTextureRegion tex_dst = {};
-        tex_dst.texture = r->mesh_texture;
-        tex_dst.w = tex_w;
-        tex_dst.h = tex_h;
-        tex_dst.d = 1;
+        tex_dst.texture = r->mesh_default_texture;
+        tex_dst.w = 1; tex_dst.h = 1; tex_dst.d = 1;
         SDL_UploadToGPUTexture(copy, &tex_src, &tex_dst, false);
-
-        SDL_EndGPUCopyPass(copy);
-        SDL_SubmitGPUCommandBuffer(cmd);
-        SDL_WaitForGPUIdle(r->device);
-        SDL_ReleaseGPUTransferBuffer(r->device, tex_xfer);
-    } else {
-        SDL_EndGPUCopyPass(copy);
-        SDL_SubmitGPUCommandBuffer(cmd);
-        SDL_WaitForGPUIdle(r->device);
     }
 
-    SDL_ReleaseGPUTransferBuffer(r->device, xfer);
-    r->mesh_index_count = index_count;
+    // Create + upload all material textures
+    if (mesh->texture_count > 0) {
+        r->mesh_textures = (SDL_GPUTexture**)calloc(mesh->texture_count, sizeof(SDL_GPUTexture*));
+        r->mesh_texture_count = mesh->texture_count;
+        for (uint32_t i = 0; i < mesh->texture_count; ++i) {
+            const MeshTexture& mt = mesh->textures[i];
+            SDL_GPUTextureCreateInfo tex_info = {};
+            tex_info.type = SDL_GPU_TEXTURETYPE_2D;
+            tex_info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+            tex_info.width = mt.w;
+            tex_info.height = mt.h;
+            tex_info.layer_count_or_depth = 1;
+            tex_info.num_levels = 1;
+            tex_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+            r->mesh_textures[i] = SDL_CreateGPUTexture(r->device, &tex_info);
 
-    fprintf(stderr, "Uploaded mesh: %u verts, %u indices", vert_count, index_count);
-    if (tex_rgba) fprintf(stderr, ", %ux%u texture", tex_w, tex_h);
-    fprintf(stderr, "\n");
+            SDL_GPUTextureTransferInfo tex_src = {};
+            tex_src.transfer_buffer = xfer;
+            tex_src.offset = tex_offsets[i];
+            SDL_GPUTextureRegion tex_dst = {};
+            tex_dst.texture = r->mesh_textures[i];
+            tex_dst.w = mt.w; tex_dst.h = mt.h; tex_dst.d = 1;
+            SDL_UploadToGPUTexture(copy, &tex_src, &tex_dst, false);
+        }
+    }
+
+    SDL_EndGPUCopyPass(copy);
+    SDL_SubmitGPUCommandBuffer(cmd);
+    SDL_WaitForGPUIdle(r->device);
+    SDL_ReleaseGPUTransferBuffer(r->device, xfer);
+
+    // Copy submesh metadata
+    r->mesh_submesh_count = mesh->submesh_count;
+    if (mesh->submesh_count > 0) {
+        r->mesh_submeshes = (MeshSubmesh*)malloc(mesh->submesh_count * sizeof(MeshSubmesh));
+        memcpy(r->mesh_submeshes, mesh->submeshes, mesh->submesh_count * sizeof(MeshSubmesh));
+    }
+
+    fprintf(stderr, "Uploaded mesh: %u verts, %u indices, %u textures, %u submeshes\n",
+            vert_count, index_count, mesh->texture_count, mesh->submesh_count);
 
     return true;
 }
@@ -756,7 +801,7 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
     // Splats then blend on top within the silhouette (and elsewhere). The
     // overlay later stencil-tests against != 1, so it only fills non-mesh
     // pixels — leaving mesh+splat composite visible inside the silhouette.
-    bool draw_mesh = r->mesh_pipeline && r->mesh_vertex_buffer && r->mesh_index_buffer && r->mesh_index_count > 0;
+    bool draw_mesh = r->mesh_pipeline && r->mesh_vertex_buffer && r->mesh_index_buffer && r->mesh_submesh_count > 0;
     if (draw_mesh) {
         SDL_BindGPUGraphicsPipeline(pass, r->mesh_pipeline);
         // Stencil reference 1: mesh marks its silhouette so the overlay pass
@@ -771,11 +816,6 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
         mesh_ib_bind.buffer = r->mesh_index_buffer;
         // TODO: 16-bit indices limit meshes to 65535 vertices — switch to 32-bit for loaded meshes
         SDL_BindGPUIndexBuffer(pass, &mesh_ib_bind, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-
-        SDL_GPUTextureSamplerBinding mesh_tex_bind = {};
-        mesh_tex_bind.texture = r->mesh_texture;
-        mesh_tex_bind.sampler = r->mesh_sampler;
-        SDL_BindGPUFragmentSamplers(pass, 0, &mesh_tex_bind, 1);
 
         float view_corrected[16];
         memcpy(view_corrected, cam->view, sizeof(view_corrected));
@@ -792,17 +832,38 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
         float mvp[16];
         mat4_mul(vp, model, mvp);
 
-        struct { float mvp[16]; float color[4]; float use_texture; float _pad[3]; } mesh_uniforms;
-        memcpy(mesh_uniforms.mvp, mvp, sizeof(mvp));
-        mesh_uniforms.color[0] = 1.0f;
-        mesh_uniforms.color[1] = 1.0f;
-        mesh_uniforms.color[2] = 1.0f;
-        mesh_uniforms.color[3] = 1.0f;
-        mesh_uniforms.use_texture = (r->mesh_texture != NULL) ? 1.0f : 0.0f;
-        mesh_uniforms._pad[0] = mesh_uniforms._pad[1] = mesh_uniforms._pad[2] = 0.0f;
+        // Draw each submesh with its own texture binding. The fragment shader
+        // samples from set=2 binding=0; we rebind between submeshes so each
+        // material's diffuse texture is applied to its own faces.
+        for (uint32_t i = 0; i < r->mesh_submesh_count; ++i) {
+            const MeshSubmesh& sm = r->mesh_submeshes[i];
+            if (sm.index_count == 0) continue;
 
-        SDL_PushGPUVertexUniformData(cmd, 0, &mesh_uniforms, sizeof(mesh_uniforms));
-        SDL_DrawGPUIndexedPrimitives(pass, r->mesh_index_count, 1, 0, 0, 0);
+            SDL_GPUTexture* tex = r->mesh_default_texture;
+            float use_texture = 0.0f;
+            if (sm.texture_id >= 0 && (uint32_t)sm.texture_id < r->mesh_texture_count
+                && r->mesh_textures[sm.texture_id]) {
+                tex = r->mesh_textures[sm.texture_id];
+                use_texture = 1.0f;
+            }
+
+            SDL_GPUTextureSamplerBinding mesh_tex_bind = {};
+            mesh_tex_bind.texture = tex;
+            mesh_tex_bind.sampler = r->mesh_sampler;
+            SDL_BindGPUFragmentSamplers(pass, 0, &mesh_tex_bind, 1);
+
+            struct { float mvp[16]; float color[4]; float use_texture; float _pad[3]; } mesh_uniforms;
+            memcpy(mesh_uniforms.mvp, mvp, sizeof(mvp));
+            mesh_uniforms.color[0] = 1.0f;
+            mesh_uniforms.color[1] = 1.0f;
+            mesh_uniforms.color[2] = 1.0f;
+            mesh_uniforms.color[3] = 1.0f;
+            mesh_uniforms.use_texture = use_texture;
+            mesh_uniforms._pad[0] = mesh_uniforms._pad[1] = mesh_uniforms._pad[2] = 0.0f;
+
+            SDL_PushGPUVertexUniformData(cmd, 0, &mesh_uniforms, sizeof(mesh_uniforms));
+            SDL_DrawGPUIndexedPrimitives(pass, sm.index_count, 1, sm.index_offset, 0, 0);
+        }
     }
 
     // Draw gaussians (alpha accumulation scaled by wireframe_occlusion blend constant)
@@ -930,7 +991,14 @@ void renderer_destroy(Renderer* r) {
     if (r->cube_index_buffer) SDL_ReleaseGPUBuffer(r->device, r->cube_index_buffer);
     if (r->mesh_vertex_buffer) SDL_ReleaseGPUBuffer(r->device, r->mesh_vertex_buffer);
     if (r->mesh_index_buffer) SDL_ReleaseGPUBuffer(r->device, r->mesh_index_buffer);
-    if (r->mesh_texture) SDL_ReleaseGPUTexture(r->device, r->mesh_texture);
+    if (r->mesh_textures) {
+        for (uint32_t i = 0; i < r->mesh_texture_count; ++i) {
+            if (r->mesh_textures[i]) SDL_ReleaseGPUTexture(r->device, r->mesh_textures[i]);
+        }
+        free(r->mesh_textures);
+    }
+    if (r->mesh_default_texture) SDL_ReleaseGPUTexture(r->device, r->mesh_default_texture);
+    if (r->mesh_submeshes) free(r->mesh_submeshes);
     if (r->mesh_sampler) SDL_ReleaseGPUSampler(r->device, r->mesh_sampler);
     if (r->index_buffer) SDL_ReleaseGPUBuffer(r->device, r->index_buffer);
     if (r->depth_texture) SDL_ReleaseGPUTexture(r->device, r->depth_texture);
