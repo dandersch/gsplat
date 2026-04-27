@@ -111,6 +111,14 @@ int main(int argc, char* argv[]) {
     bool show_node_boxes = true;
     int frame_num = 0;
 
+    // Mesh path animation (walks the mesh from refview node 0..n-1 and loops)
+    uint32_t anim_node = 0;
+    float    anim_t = 0.0f;
+    float    anim_speed = 1.0f; // world units per second
+    float    anim_yaw = 0.0f;
+    bool     anim_yaw_initialized = false;
+    float    anim_y_offset = 1.4f; // refview nodes are at head height; drop feet ~1.6m
+
     // Neighbor scratch buffers
     const uint32_t max_neighbors = 64;
     float neighbor_positions[64 * 3];
@@ -224,6 +232,56 @@ int main(int argc, char* argv[]) {
                     if (cam.move_speed > 100.0f) cam.move_speed = 100.0f;
                 }
                 break;
+            }
+        }
+
+        // Mesh path animation: walk between consecutive refview nodes and loop forever.
+        if (mesh_path && refviews_loaded && refviews.count >= 2) {
+            uint32_t a = anim_node % refviews.count;
+            uint32_t b = (a + 1) % refviews.count;
+            const float* pa = refviews.views[a].position;
+            const float* pb = refviews.views[b].position;
+            float dx = pb[0] - pa[0], dy = pb[1] - pa[1], dz = pb[2] - pa[2];
+            float dist = sqrtf(dx*dx + dy*dy + dz*dz);
+            float dur = (dist > 1e-6f) ? (dist / anim_speed) : 0.1f;
+
+            anim_t += dt / dur;
+            // Advance through nodes if we passed multiple segments in one frame.
+            int safety = (int)refviews.count + 1;
+            while (anim_t >= 1.0f && safety-- > 0) {
+                anim_t -= 1.0f;
+                anim_node = (anim_node + 1) % refviews.count;
+                a = anim_node;
+                b = (a + 1) % refviews.count;
+                pa = refviews.views[a].position;
+                pb = refviews.views[b].position;
+                dx = pb[0] - pa[0]; dy = pb[1] - pa[1]; dz = pb[2] - pa[2];
+                dist = sqrtf(dx*dx + dy*dy + dz*dz);
+                dur = (dist > 1e-6f) ? (dist / anim_speed) : 0.1f;
+            }
+
+            float t = anim_t;
+            renderer.mesh_transform.translation[0] = pa[0] + dx * t;
+            renderer.mesh_transform.translation[1] = pa[1] + dy * t + anim_y_offset;
+            renderer.mesh_transform.translation[2] = pa[2] + dz * t;
+
+            // Yaw faces direction of travel (matches camera yaw convention: yaw=0 -> +Z).
+            float horiz2 = dx*dx + dz*dz;
+            if (horiz2 > 1e-10f) {
+                float target_yaw = atan2f(dx, dz);
+                if (!anim_yaw_initialized) {
+                    anim_yaw = target_yaw;
+                    anim_yaw_initialized = true;
+                } else {
+                    float diff = target_yaw - anim_yaw;
+                    const float PI = 3.14159265358979f;
+                    while (diff >  PI) diff -= 2.0f * PI;
+                    while (diff < -PI) diff += 2.0f * PI;
+                    float k = dt * 5.0f;
+                    if (k > 1.0f) k = 1.0f;
+                    anim_yaw += diff * k;
+                }
+                renderer.mesh_transform.rotation_euler[1] = anim_yaw;
             }
         }
 
@@ -430,7 +488,7 @@ int main(int argc, char* argv[]) {
             if (best_idx >= 0 && refview_max_alpha > 0.0f) {
                 RefView* rv = &refviews.views[best_idx];
                 float dist = sqrtf(best_dist2);
-                float fade_dist = 0.5f;
+                float fade_dist = 0.1f;
                 float alpha = 1.0f - dist / fade_dist;
                 if (alpha < 0.0f) alpha = 0.0f;
                 if (alpha > refview_max_alpha) alpha = refview_max_alpha;
