@@ -2,7 +2,7 @@
 set -e
 
 CXX="${CXX:-g++}"
-CXXFLAGS="-O2 -std=c++17 -Wall -Wextra -Wno-missing-field-initializers"
+CXXFLAGS="-O2 -std=c++17 -Wall -Wextra -Wno-missing-field-initializers -Wno-unused-function"
 LDFLAGS="-lSDL3 -lsqlite3 -lm"
 OUT="gsplat"
 

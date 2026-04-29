@@ -113,7 +113,7 @@ bool refview_load(RefViewSet* set, const char* colmap_dir) {
 
         RefView* v = &set->views[idx];
         v->colmap_id = image_id;
-        strncpy(v->image_name, name, sizeof(v->image_name) - 1);
+        snprintf(v->image_name, sizeof(v->image_name), "%s", name);
         v->rotation[0] = qw;
         v->rotation[1] = qx;
         v->rotation[2] = qy;

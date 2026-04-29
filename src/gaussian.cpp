@@ -76,8 +76,7 @@ bool load_ply(const char* path, GaussianScene* scene) {
                 else sz = 4; // fallback
 
                 if (prop_count < 128) {
-                    strncpy(props[prop_count].name, name, 63);
-                    props[prop_count].name[63] = 0;
+                    snprintf(props[prop_count].name, 64, "%s", name);
                     props[prop_count].byte_size = sz;
                     props[prop_count].offset = current_offset;
                     prop_count++;
