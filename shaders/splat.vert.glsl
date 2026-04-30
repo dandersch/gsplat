@@ -7,9 +7,17 @@ layout(std430, set = 0, binding = 0) readonly buffer IndexBuffer {
     uint sorted_indices[];
 };
 
+// Each gaussian occupies 64 floats (256 bytes). See GPU layout in gaussian.h.
+//   [0..3]   pos.xyz, opacity
+//   [4..7]   scale.xyz, pad
+//   [8..11]  rotation w,x,y,z
+//   [12..15] color.rgb (raw f_dc), pad
+//   [16..60] sh_rest: 15 coefficients × RGB triples
+//   [61..63] pad
 layout(std430, set = 0, binding = 1) readonly buffer GaussianBuffer {
-    vec4 data[];
+    float data[];
 } gaussians;
+const uint G_STRIDE = 64u;
 
 layout(set = 1, binding = 0) uniform CameraUBO {
     mat4 view;
@@ -32,12 +40,14 @@ void main() {
     vec2 corner = corners[quad_verts[gl_VertexIndex % 6]];
 
     // 2. Fetch Gaussian data
-    uint idx = sorted_indices[gl_InstanceIndex];
-    vec3 position = gaussians.data[idx * 4u + 0u].xyz;
-    float opacity = gaussians.data[idx * 4u + 0u].w;
-    vec3 scale    = gaussians.data[idx * 4u + 1u].xyz;
-    vec4 rot      = gaussians.data[idx * 4u + 2u];    // (w, x, y, z)
-    vec3 color    = gaussians.data[idx * 4u + 3u].xyz;
+    uint idx  = sorted_indices[gl_InstanceIndex];
+    uint base = idx * G_STRIDE;
+    vec3 position = vec3(gaussians.data[base + 0u], gaussians.data[base + 1u], gaussians.data[base + 2u]);
+    float opacity = gaussians.data[base + 3u];
+    vec3 scale    = vec3(gaussians.data[base + 4u], gaussians.data[base + 5u], gaussians.data[base + 6u]);
+    vec4 rot      = vec4(gaussians.data[base + 8u], gaussians.data[base + 9u],
+                         gaussians.data[base + 10u], gaussians.data[base + 11u]); // (w, x, y, z)
+    vec3 dc       = vec3(gaussians.data[base + 12u], gaussians.data[base + 13u], gaussians.data[base + 14u]);
 
     // 3. Build rotation matrix from quaternion
     // rot = (w, x, y, z) stored as rot.x=w, rot.y=x, rot.z=y, rot.w=z
@@ -137,7 +147,63 @@ void main() {
     float ndc_z = (proj[2][2] * t.z + proj[3][2]) / (-t.z);
     gl_Position = vec4(ndc, ndc_z, 1.0);
 
-    // 15. Pass outputs to fragment shader
+    // 15. Evaluate spherical harmonics (degree 3) for view-dependent color.
+    //     dir = normalized vector from camera to gaussian, in world space.
+    //     cam_pos_world = -W^T * view[3].xyz   (W = mat3(view))
+    vec3 cam_pos_world = -transpose(W) * view[3].xyz;
+    vec3 dir = normalize(position - cam_pos_world);
+
+    const float SH_C0 = 0.28209479177387814;
+    const float SH_C1 = 0.4886025119029199;
+    const float SH_C2_0 =  1.0925484305920792;
+    const float SH_C2_1 = -1.0925484305920792;
+    const float SH_C2_2 =  0.31539156525252005;
+    const float SH_C2_3 = -1.0925484305920792;
+    const float SH_C2_4 =  0.5462742152960396;
+    const float SH_C3_0 = -0.5900435899266435;
+    const float SH_C3_1 =  2.890611442640554;
+    const float SH_C3_2 = -0.4570457994644658;
+    const float SH_C3_3 =  0.3731763325901154;
+    const float SH_C3_4 = -0.4570457994644658;
+    const float SH_C3_5 =  1.445305721320277;
+    const float SH_C3_6 = -0.5900435899266435;
+
+    // Helper: fetch the k-th rest coefficient (RGB triple) at sh_rest base.
+    // sh_rest occupies floats [16 .. 60] within the gaussian (15 coeffs * 3 ch).
+    uint sh_base = base + 16u;
+    #define SH(k) vec3( \
+        gaussians.data[sh_base + uint(k) * 3u + 0u], \
+        gaussians.data[sh_base + uint(k) * 3u + 1u], \
+        gaussians.data[sh_base + uint(k) * 3u + 2u])
+
+    vec3 result = SH_C0 * dc;
+
+    float x = dir.x, y = dir.y, z = dir.z;
+    // Degree 1
+    result += -SH_C1 * y * SH(0);
+    result +=  SH_C1 * z * SH(1);
+    result += -SH_C1 * x * SH(2);
+    // Degree 2
+    float xx = x*x, yy = y*y, zz = z*z;
+    float xy = x*y, yz = y*z, xz = x*z;
+    result += SH_C2_0 * xy            * SH(3);
+    result += SH_C2_1 * yz            * SH(4);
+    result += SH_C2_2 * (2.0*zz - xx - yy) * SH(5);
+    result += SH_C2_3 * xz            * SH(6);
+    result += SH_C2_4 * (xx - yy)     * SH(7);
+    // Degree 3
+    result += SH_C3_0 * y * (3.0*xx - yy)               * SH(8);
+    result += SH_C3_1 * xy * z                          * SH(9);
+    result += SH_C3_2 * y * (4.0*zz - xx - yy)          * SH(10);
+    result += SH_C3_3 * z * (2.0*zz - 3.0*xx - 3.0*yy)  * SH(11);
+    result += SH_C3_4 * x * (4.0*zz - xx - yy)          * SH(12);
+    result += SH_C3_5 * z * (xx - yy)                   * SH(13);
+    result += SH_C3_6 * x * (xx - 3.0*yy)               * SH(14);
+
+    result += 0.5;
+    vec3 color = max(result, vec3(0.0));
+
+    // 16. Pass outputs to fragment shader
     frag_color = color;
     frag_opacity = opacity;
     frag_center = center_px;

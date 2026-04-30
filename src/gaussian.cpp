@@ -10,14 +10,6 @@ static float sigmoid(float x) {
     return 1.0f / (1.0f + expf(-x));
 }
 
-static const float SH_C0 = 0.2820947917738781f;
-
-static float clampf(float v, float lo, float hi) {
-    if (v < lo) return lo;
-    if (v > hi) return hi;
-    return v;
-}
-
 struct PlyProperty {
     char name[64];
     int  byte_size; // 4 for float/int, etc.
@@ -107,6 +99,18 @@ bool load_ply(const char* path, GaussianScene* scene) {
     int off_op = find_prop("opacity");
     int off_dc0 = find_prop("f_dc_0"), off_dc1 = find_prop("f_dc_1"), off_dc2 = find_prop("f_dc_2");
 
+    // f_rest_0..f_rest_44 (3DGS PLY layout: 15 coeffs per channel, R then G then B).
+    // We support up to SH degree 3 (45 rest coeffs). Lower-degree PLYs leave
+    // the missing slots at 0 (no contribution).
+    int off_rest[45];
+    int rest_count = 0;
+    for (int k = 0; k < 45; k++) {
+        char name[32];
+        snprintf(name, sizeof(name), "f_rest_%d", k);
+        off_rest[k] = find_prop(name);
+        if (off_rest[k] >= 0) rest_count++;
+    }
+
     if (off_x < 0 || off_y < 0 || off_z < 0) {
         fprintf(stderr, "Missing position properties\n");
         fclose(f); return false;
@@ -165,17 +169,37 @@ bool load_ply(const char* path, GaussianScene* scene) {
             g->opacity = 1.0f;
         }
 
-        // Color (SH DC decode)
+        // Color: store raw f_dc_0..2; the shader applies SH_C0, adds higher
+        // SH bands, biases by +0.5 and clamps. (Storing raw values lets the
+        // higher-degree contributions push the color in either direction
+        // before the final clamp, which is what produces the saturated
+        // view-dependent shading.)
         if (off_dc0 >= 0) {
-            float dc0, dc1, dc2;
-            memcpy(&dc0, v + off_dc0, 4); memcpy(&dc1, v + off_dc1, 4); memcpy(&dc2, v + off_dc2, 4);
-            g->color[0] = clampf(SH_C0 * dc0 + 0.5f, 0.0f, 1.0f);
-            g->color[1] = clampf(SH_C0 * dc1 + 0.5f, 0.0f, 1.0f);
-            g->color[2] = clampf(SH_C0 * dc2 + 0.5f, 0.0f, 1.0f);
+            memcpy(&g->color[0], v + off_dc0, 4);
+            memcpy(&g->color[1], v + off_dc1, 4);
+            memcpy(&g->color[2], v + off_dc2, 4);
         } else {
-            g->color[0] = g->color[1] = g->color[2] = 0.5f;
+            // Encode mid-grey: SH_C0 * dc + 0.5 = 0.5 → dc = 0
+            g->color[0] = g->color[1] = g->color[2] = 0.0f;
+        }
+
+        // f_rest: PLY stores all R coeffs (k=0..14), then G (15..29), then B (30..44).
+        // Repack into per-coefficient RGB triples for shader-friendly access:
+        //   sh_rest[k*3 + 0] = R, sh_rest[k*3 + 1] = G, sh_rest[k*3 + 2] = B
+        for (int k = 0; k < 15; k++) {
+            float r = 0.0f, gg = 0.0f, b = 0.0f;
+            if (off_rest[k]      >= 0) memcpy(&r,  v + off_rest[k],      4);
+            if (off_rest[15 + k] >= 0) memcpy(&gg, v + off_rest[15 + k], 4);
+            if (off_rest[30 + k] >= 0) memcpy(&b,  v + off_rest[30 + k], 4);
+            g->sh_rest[k * 3 + 0] = r;
+            g->sh_rest[k * 3 + 1] = gg;
+            g->sh_rest[k * 3 + 2] = b;
         }
     }
+
+    fprintf(stderr, "PLY: found %d/45 f_rest_* coefficients (SH degree %s)\n",
+            rest_count,
+            rest_count >= 45 ? "3" : rest_count >= 24 ? "2" : rest_count >= 9 ? "1" : "0");
 
     free(raw);
 
@@ -213,26 +237,24 @@ void free_scene(GaussianScene* scene) {
 }
 
 GpuGaussian* pack_gpu_gaussians(const GaussianScene* scene) {
-    GpuGaussian* gpu = (GpuGaussian*)malloc(scene->gaussian_count * sizeof(GpuGaussian));
+    GpuGaussian* gpu = (GpuGaussian*)calloc(scene->gaussian_count, sizeof(GpuGaussian));
     for (uint32_t i = 0; i < scene->gaussian_count; i++) {
         const Gaussian* g = &scene->gaussians[i];
-        GpuGaussian* gp = &gpu[i];
-        gp->pos_opacity[0] = g->position[0];
-        gp->pos_opacity[1] = g->position[1];
-        gp->pos_opacity[2] = g->position[2];
-        gp->pos_opacity[3] = g->opacity;
-        gp->scale_pad[0] = g->scale[0];
-        gp->scale_pad[1] = g->scale[1];
-        gp->scale_pad[2] = g->scale[2];
-        gp->scale_pad[3] = 0.0f;
-        gp->rotation[0] = g->rotation[0]; // w
-        gp->rotation[1] = g->rotation[1]; // x
-        gp->rotation[2] = g->rotation[2]; // y
-        gp->rotation[3] = g->rotation[3]; // z
-        gp->color_pad[0] = g->color[0];
-        gp->color_pad[1] = g->color[1];
-        gp->color_pad[2] = g->color[2];
-        gp->color_pad[3] = 0.0f;
+        float* d = gpu[i].data;
+        // [0..3] pos.xyz, opacity
+        d[0] = g->position[0]; d[1] = g->position[1]; d[2] = g->position[2];
+        d[3] = g->opacity;
+        // [4..7] scale.xyz, pad
+        d[4] = g->scale[0]; d[5] = g->scale[1]; d[6] = g->scale[2];
+        // [8..11] rotation w,x,y,z
+        d[8] = g->rotation[0]; d[9] = g->rotation[1];
+        d[10] = g->rotation[2]; d[11] = g->rotation[3];
+        // [12..15] color.rgb (raw DC), pad
+        d[12] = g->color[0]; d[13] = g->color[1]; d[14] = g->color[2];
+        // [16..60] sh_rest (45 floats)
+        for (int k = 0; k < GAUSSIAN_SH_REST_FLOATS; k++) {
+            d[16 + k] = g->sh_rest[k];
+        }
     }
     return gpu;
 }

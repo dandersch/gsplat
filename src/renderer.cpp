@@ -470,7 +470,7 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
 
 void renderer_upload_gaussians(Renderer* r, const GaussianScene* scene) {
     r->gaussian_count = scene->gaussian_count;
-    uint32_t buf_size = scene->gaussian_count * 64;
+    uint32_t buf_size = scene->gaussian_count * (uint32_t)sizeof(GpuGaussian);
 
     // Gaussian data buffer (static)
     SDL_GPUBufferCreateInfo buf_info = {};

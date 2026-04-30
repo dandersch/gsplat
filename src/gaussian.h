@@ -1,19 +1,30 @@
 #pragma once
 #include <cstdint>
 
+// SH degree 3 = 16 coefficients per channel. We store DC (degree 0) separately
+// in `color`, and the remaining 15 per-channel coefficients in `sh_rest`,
+// laid out per-coefficient as RGB triples: (k0R,k0G,k0B, k1R,k1G,k1B, ...).
+#define GAUSSIAN_SH_REST_FLOATS 45
+
 struct Gaussian {
     float position[3];
     float scale[3];
     float rotation[4]; // w, x, y, z
-    float color[3];
+    float color[3];    // raw f_dc_0..2 (no SH_C0/bias applied; shader handles it)
     float opacity;
+    float sh_rest[GAUSSIAN_SH_REST_FLOATS]; // raw f_rest, reordered to RGB triples per coeff
 };
 
+// GPU layout (std430, 64 floats / 256 bytes per gaussian):
+//   [0..2]   position           [3]      opacity
+//   [4..6]   scale              [7]      pad
+//   [8..11]  rotation (w,x,y,z)
+//   [12..14] color (raw DC)     [15]     pad
+//   [16..60] sh_rest (45 floats, RGB triples per coefficient)
+//   [61..63] pad
+#define GPU_GAUSSIAN_FLOATS 64
 struct GpuGaussian {
-    float pos_opacity[4];  // x, y, z, opacity
-    float scale_pad[4];    // sx, sy, sz, 0
-    float rotation[4];     // w, x, y, z
-    float color_pad[4];    // r, g, b, 0
+    float data[GPU_GAUSSIAN_FLOATS];
 };
 
 struct SortContext {
