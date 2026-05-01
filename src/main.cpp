@@ -101,6 +101,7 @@ int main(int argc, char* argv[]) {
     Camera cam;
     camera_init(&cam);
     SDL_SetWindowRelativeMouseMode(window, true); // start in camera mode
+    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouse;
 
     bool keys[9] = {}; // W A S D Space LCtrl LShift E Q
     uint64_t last_time = SDL_GetPerformanceCounter();
@@ -161,6 +162,9 @@ int main(int argc, char* argv[]) {
                 if (ev.button.button == SDL_BUTTON_RIGHT) {
                     cam.camera_mode = !cam.camera_mode;
                     SDL_SetWindowRelativeMouseMode(window, cam.camera_mode);
+                    ImGuiIO& io = ImGui::GetIO();
+                    if (cam.camera_mode) io.ConfigFlags |= ImGuiConfigFlags_NoMouse;
+                    else                 io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
                 }
                 if (ev.button.button == SDL_BUTTON_LEFT && cam.camera_mode &&
                     refviews_loaded && !refviews.lerping) {
