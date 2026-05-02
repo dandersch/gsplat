@@ -113,6 +113,7 @@ int main(int argc, char* argv[]) {
     float refview_max_alpha = 0.5f;
     float node_half_size = 0.5f;
     bool show_node_boxes = true;
+    bool show_hotspot_debug = false;
     int frame_num = 0;
 
     // Mesh path animation (walks the mesh from refview node 0..n-1 and loops)
@@ -433,6 +434,7 @@ int main(int argc, char* argv[]) {
             }
             ImGui::Checkbox("Show Node Boxes", &show_node_boxes);
             ImGui::SliderFloat("Node Box Size", &node_half_size, 0.1f, 1.0f);
+            ImGui::Checkbox("Show Hotspot Debug", &show_hotspot_debug);
             ImGui::SliderFloat("Transition Speed", &refviews.lerp_speed, 1.0f, 10.0f);
             if (refviews.current_node >= 0) {
                 ImGui::Text("Current Node: %d", refviews.current_node);
@@ -525,6 +527,94 @@ int main(int argc, char* argv[]) {
                 dl->AddCircle(center, 8.0f, IM_COL32(0, 200, 255, 120), 0, 1.5f);
             } else {
                 dl->AddCircleFilled(center, 3.0f, IM_COL32(255, 255, 255, 200));
+            }
+        }
+
+        // Hotspot debug overlay: project authored polygons of the current
+        // refview onto the screen by inverting the overlay shader pipeline.
+        if (show_hotspot_debug && refviews_loaded && refviews.current_node >= 0) {
+            RefView* cv = &refviews.views[refviews.current_node];
+            if (cv->hotspot_count > 0) {
+                float cam_basis[16];
+                float cam_tan[2];
+                camera_get_overlay_ray_basis(&cam, (float)win_w / (float)win_h, cam_basis, cam_tan);
+                float ref_rot[16];
+                refview_get_rotation_matrix(cv, ref_rot);
+                ImDrawList* dl = ImGui::GetForegroundDrawList();
+                const float PI = 3.14159265358979f;
+
+                ImVec2 pts_buf[256];
+
+                for (uint32_t hi = 0; hi < cv->hotspot_count; hi++) {
+                    const Hotspot* h = &cv->hotspots[hi];
+                    if (h->type != HOTSPOT_SHAPE_POLYGON) continue;
+                    if (h->polygon.count < 3) continue;
+
+                    // Deterministic per-hotspot color via hash -> hue.
+                    uint32_t k = (uint32_t)refviews.current_node * 2654435761u + hi * 2246822519u;
+                    float hue = (float)(k & 0xFFFF) / 65535.0f; // [0,1)
+                    // HSV(h, 0.85, 1.0) -> RGB
+                    float hh = hue * 6.0f;
+                    int hi_ = (int)hh;
+                    float ff = hh - (float)hi_;
+                    float p = 1.0f * (1.0f - 0.85f);
+                    float q = 1.0f * (1.0f - 0.85f * ff);
+                    float t = 1.0f * (1.0f - 0.85f * (1.0f - ff));
+                    float r=0, g=0, b=0;
+                    switch (hi_ % 6) {
+                        case 0: r=1.0f; g=t;    b=p;    break;
+                        case 1: r=q;    g=1.0f; b=p;    break;
+                        case 2: r=p;    g=1.0f; b=t;    break;
+                        case 3: r=p;    g=q;    b=1.0f; break;
+                        case 4: r=t;    g=p;    b=1.0f; break;
+                        case 5: r=1.0f; g=p;    b=q;    break;
+                    }
+                    ImU32 line_col = IM_COL32((int)(r*255), (int)(g*255), (int)(b*255), 230);
+                    ImU32 fill_col = IM_COL32((int)(r*255), (int)(g*255), (int)(b*255), 60);
+
+                    uint32_t n = h->polygon.count;
+                    if (n > 256) n = 256;
+                    bool any_behind = false;
+                    for (uint32_t i = 0; i < n; i++) {
+                        float u = h->polygon.points[i][0];
+                        float v = h->polygon.points[i][1];
+
+                        // UV -> ref-camera direction (matches overlay.frag.glsl).
+                        float lon = (u - 0.5f) * 2.0f * PI;
+                        float vp  = (v - 0.5f) * PI;
+                        float cb  = cosf(vp);
+                        float rdx = cb * sinf(lon);
+                        float rdy = -sinf(vp);
+                        float rdz = cb * cosf(lon);
+
+                        // ref-camera dir -> world dir: transpose(ref_rot) * rd
+                        float wx = ref_rot[0]*rdx + ref_rot[1]*rdy + ref_rot[2] *rdz;
+                        float wy = ref_rot[4]*rdx + ref_rot[5]*rdy + ref_rot[6] *rdz;
+                        float wz = ref_rot[8]*rdx + ref_rot[9]*rdy + ref_rot[10]*rdz;
+
+                        // world dir -> camera dir: transpose(cam_basis) * w
+                        float cx = cam_basis[0]*wx + cam_basis[1]*wy + cam_basis[2] *wz;
+                        float cy = cam_basis[4]*wx + cam_basis[5]*wy + cam_basis[6] *wz;
+                        float cz = cam_basis[8]*wx + cam_basis[9]*wy + cam_basis[10]*wz;
+
+                        if (cz <= 1e-4f) { any_behind = true; break; }
+
+                        // camera dir -> NDC (inverse of overlay.frag construction).
+                        // Note: SDL_GPU (Vulkan) NDC has Y pointing down, but the
+                        // perspective pipeline elsewhere uses persp[5] = -f to flip
+                        // it to logical Y-up. The overlay shader writes v_ndc directly
+                        // (no proj), so screen Y here is also Y-up: ndc_y = +1 is top.
+                        float ndc_x = (cx / cz) / cam_tan[0];
+                        float ndc_y = -(cy / cz) / cam_tan[1];
+
+                        pts_buf[i].x = (ndc_x * 0.5f + 0.5f) * (float)win_w;
+                        pts_buf[i].y = (1.0f - (ndc_y * 0.5f + 0.5f)) * (float)win_h;
+                    }
+                    if (any_behind) continue;
+
+                    dl->AddConvexPolyFilled(pts_buf, (int)n, fill_col);
+                    dl->AddPolyline(pts_buf, (int)n, line_col, ImDrawFlags_Closed, 2.0f);
+                }
             }
         }
 
