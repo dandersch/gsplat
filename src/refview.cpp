@@ -428,6 +428,13 @@ void refview_get_rotation_matrix(const RefView* v, float* m) {
 }
 
 void refview_free(RefViewSet* set) {
+    if (set->views) {
+        for (uint32_t i = 0; i < set->count; i++) {
+            hotspot_free_array(set->views[i].hotspots, set->views[i].hotspot_count);
+            set->views[i].hotspots = NULL;
+            set->views[i].hotspot_count = 0;
+        }
+    }
     free(set->views);
     free(set->covis_edges);
     memset(set, 0, sizeof(*set));

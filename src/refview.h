@@ -1,6 +1,7 @@
 #pragma once
 #include <SDL3/SDL.h>
 #include "camera.h"
+#include "hotspot.h"
 #include <cstdint>
 
 struct RefView {
@@ -11,6 +12,11 @@ struct RefView {
     float   yaw, pitch;        // derived from rotation for lerp target
     SDL_GPUTexture* texture;   // NULL until image loaded
     int     width, height;
+
+    // Authored clickable regions on this view's panorama. NULL until a
+    // sidecar is loaded via hotspot_load_for_set.
+    Hotspot* hotspots;
+    uint32_t hotspot_count;
 };
 
 struct CovisEdge {

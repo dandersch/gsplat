@@ -11,6 +11,8 @@
 #include "gaussian.cpp"
 #include "mesh.cpp"
 #include "renderer.cpp"
+#include "json_mini.cpp"
+#include "hotspot.cpp"
 #include "refview.cpp"
 
 int main(int argc, char* argv[]) {
@@ -94,6 +96,7 @@ int main(int argc, char* argv[]) {
         if (refviews_loaded) {
             refview_load_covisibility(&refviews, colmap_dir);
             refview_load_images(&refviews, device);
+            hotspot_load_for_set(&refviews);
         }
     }
 
@@ -172,7 +175,62 @@ int main(int argc, char* argv[]) {
                     float forward[3];
                     camera_get_forward(&cam, forward);
 
-                    // Test against all neighbor AABBs, pick closest hit
+                    // 1. Hotspot pick on the currently-overlaid view (if any).
+                    //    Hotspots take precedence over neighbor-node clicks.
+                    int  hotspot_view  = -1;
+                    int32_t hotspot_idx = -1;
+                    if (refviews.current_node >= 0) {
+                        RefView* cv = &refviews.views[refviews.current_node];
+                        if (cv->hotspot_count > 0) {
+                            // Gate on overlay-visible distance (matches fade_dist=0.1 used below).
+                            float dx0 = cam.position[0] - cv->position[0];
+                            float dy0 = cam.position[1] - cv->position[1];
+                            float dz0 = cam.position[2] - cv->position[2];
+                            float d2  = dx0*dx0 + dy0*dy0 + dz0*dz0;
+                            if (d2 < 0.01f) {
+                                // World forward -> ref-camera frame (matches overlay shader).
+                                float R[16];
+                                refview_get_rotation_matrix(cv, R);
+                                float rx = R[0]*forward[0] + R[4]*forward[1] + R[8] *forward[2];
+                                float ry = R[1]*forward[0] + R[5]*forward[1] + R[9] *forward[2];
+                                float rz = R[2]*forward[0] + R[6]*forward[1] + R[10]*forward[2];
+                                const float PI = 3.14159265358979f;
+                                float u = atan2f(rx, rz) / (2.0f * PI) + 0.5f;
+                                float ry_c = ry < -1.0f ? -1.0f : (ry > 1.0f ? 1.0f : ry);
+                                float v = -asinf(ry_c) / PI + 0.5f;
+                                hotspot_idx = hotspot_pick(cv, u, v);
+                                if (hotspot_idx >= 0) hotspot_view = refviews.current_node;
+                            }
+                        }
+                    }
+
+                    int32_t warp_target = -1;
+                    if (hotspot_idx >= 0) {
+                        const Hotspot* h = &refviews.views[hotspot_view].hotspots[hotspot_idx];
+                        if (h->action.type == HOTSPOT_ACTION_WARP) {
+                            warp_target = h->action.warp.target_view;
+                        }
+                    }
+
+                    if (warp_target >= 0) {
+                        RefView* tv = &refviews.views[warp_target];
+                        float dx = tv->position[0] - cam.position[0];
+                        float dy = tv->position[1] - cam.position[1];
+                        float dz = tv->position[2] - cam.position[2];
+                        float dist = sqrtf(dx*dx + dy*dy + dz*dz);
+                        refviews.selected = warp_target;
+                        refviews.lerping = true;
+                        refviews.lerp_t = 0.0f;
+                        refviews.lerp_duration = (dist > 1e-6f) ? dist / refviews.lerp_speed : 0.1f;
+                        refviews.start_pos[0] = cam.position[0];
+                        refviews.start_pos[1] = cam.position[1];
+                        refviews.start_pos[2] = cam.position[2];
+                        refviews.start_yaw = cam.yaw;
+                        refviews.start_pitch = cam.pitch;
+                        break;
+                    }
+
+                    // 2. Fallback: test against all neighbor AABBs, pick closest hit
                     float best_t = 1e30f;
                     int best_hit = -1;
                     for (uint32_t ni = 0; ni < neighbor_count; ni++) {
