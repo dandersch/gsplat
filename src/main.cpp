@@ -492,10 +492,39 @@ int main(int argc, char* argv[]) {
             ImGui::End();
         }
 
-        // Draw crosshair in camera mode (highlight when aiming at a node)
+        // Draw crosshair in camera mode (highlight when aiming at a node,
+        // or show an upward arrow when aiming at a hotspot on the overlay).
         if (cam.camera_mode) {
             bool crosshair_hover = false;
-            if (refviews_loaded && !refviews.lerping && neighbor_count > 0) {
+            bool hotspot_hover = false;
+
+            // Hotspot hover takes precedence over neighbor-node hover.
+            // Mirrors the click-time pick logic above.
+            if (refviews_loaded && !refviews.lerping && refviews.current_node >= 0) {
+                RefView* cv = &refviews.views[refviews.current_node];
+                if (cv->hotspot_count > 0) {
+                    float dx0 = cam.position[0] - cv->position[0];
+                    float dy0 = cam.position[1] - cv->position[1];
+                    float dz0 = cam.position[2] - cv->position[2];
+                    float d2  = dx0*dx0 + dy0*dy0 + dz0*dz0;
+                    if (d2 < 0.01f) {
+                        float forward[3];
+                        camera_get_forward(&cam, forward);
+                        float R[16];
+                        refview_get_rotation_matrix(cv, R);
+                        float rx = R[0]*forward[0] + R[4]*forward[1] + R[8] *forward[2];
+                        float ry = R[1]*forward[0] + R[5]*forward[1] + R[9] *forward[2];
+                        float rz = R[2]*forward[0] + R[6]*forward[1] + R[10]*forward[2];
+                        const float PI = 3.14159265358979f;
+                        float u = atan2f(rx, rz) / (2.0f * PI) + 0.5f;
+                        float ry_c = ry < -1.0f ? -1.0f : (ry > 1.0f ? 1.0f : ry);
+                        float v = -asinf(ry_c) / PI + 0.5f;
+                        if (hotspot_pick(cv, u, v) >= 0) hotspot_hover = true;
+                    }
+                }
+            }
+
+            if (!hotspot_hover && refviews_loaded && !refviews.lerping && neighbor_count > 0) {
                 float forward[3];
                 camera_get_forward(&cam, forward);
                 for (uint32_t ni = 0; ni < neighbor_count; ni++) {
@@ -522,7 +551,29 @@ int main(int argc, char* argv[]) {
 
             ImDrawList* dl = ImGui::GetForegroundDrawList();
             ImVec2 center(win_w * 0.5f, win_h * 0.5f);
-            if (crosshair_hover) {
+            if (hotspot_hover) {
+                // Myst-style upward pointing arrow.
+                ImU32 fill_col    = IM_COL32(255, 230, 80, 240);
+                ImU32 outline_col = IM_COL32(0,   0,   0,   220);
+                ImVec2 tip(center.x,        center.y - 10.0f);
+                ImVec2 lwing(center.x - 8.0f, center.y + 1.0f);
+                ImVec2 rwing(center.x + 8.0f, center.y + 1.0f);
+                ImVec2 lstem(center.x - 3.0f, center.y + 1.0f);
+                ImVec2 rstem(center.x + 3.0f, center.y + 1.0f);
+                ImVec2 lbase(center.x - 3.0f, center.y + 9.0f);
+                ImVec2 rbase(center.x + 3.0f, center.y + 9.0f);
+                // Filled arrow: head triangle + rectangular stem.
+                dl->AddTriangleFilled(tip, lwing, rwing, fill_col);
+                dl->AddQuadFilled(lstem, rstem, rbase, lbase, fill_col);
+                // Outline (head + stem sides + base).
+                dl->AddLine(tip,   lwing, outline_col, 1.5f);
+                dl->AddLine(tip,   rwing, outline_col, 1.5f);
+                dl->AddLine(lwing, lstem, outline_col, 1.5f);
+                dl->AddLine(rwing, rstem, outline_col, 1.5f);
+                dl->AddLine(lstem, lbase, outline_col, 1.5f);
+                dl->AddLine(rstem, rbase, outline_col, 1.5f);
+                dl->AddLine(lbase, rbase, outline_col, 1.5f);
+            } else if (crosshair_hover) {
                 dl->AddCircleFilled(center, 5.0f, IM_COL32(0, 200, 255, 240));
                 dl->AddCircle(center, 8.0f, IM_COL32(0, 200, 255, 120), 0, 1.5f);
             } else {
