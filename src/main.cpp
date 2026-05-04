@@ -205,30 +205,51 @@ int main(int argc, char* argv[]) {
                         }
                     }
 
-                    int32_t warp_target = -1;
                     if (hotspot_idx >= 0) {
                         const Hotspot* h = &refviews.views[hotspot_view].hotspots[hotspot_idx];
                         if (h->action.type == HOTSPOT_ACTION_WARP) {
-                            warp_target = h->action.warp.target_view;
+                            int32_t warp_target = h->action.warp.target_view;
+                            RefView* tv = &refviews.views[warp_target];
+                            float dx = tv->position[0] - cam.position[0];
+                            float dy = tv->position[1] - cam.position[1];
+                            float dz = tv->position[2] - cam.position[2];
+                            float dist = sqrtf(dx*dx + dy*dy + dz*dz);
+                            refviews.selected = warp_target;
+                            refviews.inspect_mode = false;
+                            refviews.lerping = true;
+                            refviews.lerp_t = 0.0f;
+                            refviews.lerp_duration = (dist > 1e-6f) ? dist / refviews.lerp_speed : 0.1f;
+                            refviews.start_pos[0] = cam.position[0];
+                            refviews.start_pos[1] = cam.position[1];
+                            refviews.start_pos[2] = cam.position[2];
+                            refviews.start_yaw = cam.yaw;
+                            refviews.start_pitch = cam.pitch;
+                            break;
+                        } else if (h->action.type == HOTSPOT_ACTION_INSPECT) {
+                            const HotspotActionInspect* it = &h->action.inspect;
+                            float dx = it->position[0] - cam.position[0];
+                            float dy = it->position[1] - cam.position[1];
+                            float dz = it->position[2] - cam.position[2];
+                            float dist = sqrtf(dx*dx + dy*dy + dz*dz);
+                            refviews.selected = -1;
+                            refviews.inspect_mode = true;
+                            refviews.inspect_target_pos[0] = it->position[0];
+                            refviews.inspect_target_pos[1] = it->position[1];
+                            refviews.inspect_target_pos[2] = it->position[2];
+                            refviews.inspect_target_yaw   = it->yaw;
+                            refviews.inspect_target_pitch = it->pitch;
+                            refviews.lerping = true;
+                            refviews.lerp_t = 0.0f;
+                            refviews.lerp_duration = (dist > 1e-6f) ? dist / refviews.lerp_speed : 0.1f;
+                            refviews.start_pos[0] = cam.position[0];
+                            refviews.start_pos[1] = cam.position[1];
+                            refviews.start_pos[2] = cam.position[2];
+                            refviews.start_yaw = cam.yaw;
+                            refviews.start_pitch = cam.pitch;
+                            // Drive the existing ortho_blend transition.
+                            cam.orthographic = true;
+                            break;
                         }
-                    }
-
-                    if (warp_target >= 0) {
-                        RefView* tv = &refviews.views[warp_target];
-                        float dx = tv->position[0] - cam.position[0];
-                        float dy = tv->position[1] - cam.position[1];
-                        float dz = tv->position[2] - cam.position[2];
-                        float dist = sqrtf(dx*dx + dy*dy + dz*dz);
-                        refviews.selected = warp_target;
-                        refviews.lerping = true;
-                        refviews.lerp_t = 0.0f;
-                        refviews.lerp_duration = (dist > 1e-6f) ? dist / refviews.lerp_speed : 0.1f;
-                        refviews.start_pos[0] = cam.position[0];
-                        refviews.start_pos[1] = cam.position[1];
-                        refviews.start_pos[2] = cam.position[2];
-                        refviews.start_yaw = cam.yaw;
-                        refviews.start_pitch = cam.pitch;
-                        break;
                     }
 
                     // 2. Fallback: test against all neighbor AABBs, pick closest hit

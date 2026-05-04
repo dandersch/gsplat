@@ -39,6 +39,15 @@ struct RefViewSet {
     float    start_pos[3];
     float    start_yaw, start_pitch;
 
+    // Inspect-mode lerp: when true, refview_update interpolates camera to
+    // the inspect_target_* transform (rather than to views[selected].position)
+    // and also lerps yaw/pitch. The orthographic switch itself is driven by
+    // cam->orthographic / cam->ortho_blend (set by the caller on click).
+    bool     inspect_mode;
+    float    inspect_target_pos[3];
+    float    inspect_target_yaw;
+    float    inspect_target_pitch;
+
     // neighbor discovery
     float    neighbor_radius;  // only show nodes within this distance of current_node
 

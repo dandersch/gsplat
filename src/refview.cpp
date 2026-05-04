@@ -333,7 +333,8 @@ static float smoothstep(float t) {
 }
 
 bool refview_update(RefViewSet* set, Camera* cam, float dt) {
-    if (!set->lerping || set->selected < 0) return false;
+    if (!set->lerping) return false;
+    if (!set->inspect_mode && set->selected < 0) return false;
 
     set->lerp_t += dt / set->lerp_duration;
     if (set->lerp_t >= 1.0f) {
@@ -342,11 +343,27 @@ bool refview_update(RefViewSet* set, Camera* cam, float dt) {
     }
 
     float t = smoothstep(set->lerp_t);
-    RefView* target = &set->views[set->selected];
 
-    cam->position[0] = lerpf(set->start_pos[0], target->position[0], t);
-    cam->position[1] = lerpf(set->start_pos[1], target->position[1], t);
-    cam->position[2] = lerpf(set->start_pos[2], target->position[2], t);
+    if (set->inspect_mode) {
+        cam->position[0] = lerpf(set->start_pos[0], set->inspect_target_pos[0], t);
+        cam->position[1] = lerpf(set->start_pos[1], set->inspect_target_pos[1], t);
+        cam->position[2] = lerpf(set->start_pos[2], set->inspect_target_pos[2], t);
+
+        // Shortest-arc yaw lerp (wrap to [-pi, pi]).
+        const float PI = 3.14159265358979f;
+        float dyaw = set->inspect_target_yaw - set->start_yaw;
+        while (dyaw >  PI) dyaw -= 2.0f * PI;
+        while (dyaw < -PI) dyaw += 2.0f * PI;
+        cam->yaw   = set->start_yaw + dyaw * t;
+        cam->pitch = lerpf(set->start_pitch, set->inspect_target_pitch, t);
+
+        if (!set->lerping) set->inspect_mode = false;
+    } else {
+        RefView* target = &set->views[set->selected];
+        cam->position[0] = lerpf(set->start_pos[0], target->position[0], t);
+        cam->position[1] = lerpf(set->start_pos[1], target->position[1], t);
+        cam->position[2] = lerpf(set->start_pos[2], target->position[2], t);
+    }
 
     return true;
 }

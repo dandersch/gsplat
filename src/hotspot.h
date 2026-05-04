@@ -10,7 +10,8 @@ enum HotspotShapeType : uint8_t {
 };
 
 enum HotspotActionType : uint8_t {
-    HOTSPOT_ACTION_WARP = 0,
+    HOTSPOT_ACTION_WARP    = 0,  // lerp to another refview's panorama
+    HOTSPOT_ACTION_INSPECT = 1,  // lerp to a free camera transform + go orthographic
 };
 
 struct HotspotPolygon {
@@ -22,9 +23,16 @@ struct HotspotActionWarp {
     int32_t target_view;     // resolved RefView index, or -1 if unresolved (drop on load)
 };
 
+struct HotspotActionInspect {
+    float position[3];       // world-space camera position
+    float yaw;               // radians
+    float pitch;             // radians
+};
+
 struct HotspotAction {
-    HotspotActionType type;
-    HotspotActionWarp warp;  // active iff type == HOTSPOT_ACTION_WARP
+    HotspotActionType    type;
+    HotspotActionWarp    warp;     // active iff type == HOTSPOT_ACTION_WARP
+    HotspotActionInspect inspect;  // active iff type == HOTSPOT_ACTION_INSPECT
 };
 
 struct Hotspot {

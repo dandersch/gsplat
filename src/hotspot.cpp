@@ -16,7 +16,15 @@
 //     {
 //       "shape":  { "type": "polygon",
 //                   "points": [[u,v], [u,v], ...] },     // >= 3 points, [0,1]
-//       "action": { "type": "warp", "target": "n01w03_equirect.png" }
+//       "action": { "type": "warp",
+//                   "target": "n01w03_equirect.png" }
+//     },
+//     {
+//       "shape":  { "type": "polygon",
+//                   "points": [[u,v], [u,v], ...] },
+//       "action": { "type": "inspect",
+//                   "target": { "position": [x, y, z],
+//                               "yaw": 0.0, "pitch": 0.0 } }   // radians
 //     }
 //   ]
 // }
@@ -24,6 +32,10 @@
 // Polygons are implicitly closed (last -> first). Winding is irrelevant
 // (hit test is even-odd). Seam-crossing regions are emitted by the
 // converter as multiple independent hotspots sharing the same action.
+//
+// "warp"    lerps the camera position to another refview node.
+// "inspect" lerps the camera position+orientation to a free transform
+//           and switches the projection to orthographic.
 // ---------------------------------------------------------------------------
 
 // ---- internal types -------------------------------------------------------
@@ -37,7 +49,12 @@ struct HotspotBuild {
     uint32_t          point_cap;
 
     HotspotActionType action_type;
-    char              action_target[256];   // image_name to resolve later
+    // warp: image_name to resolve later
+    char              warp_target[256];
+    // inspect: free camera transform
+    float             insp_position[3];
+    float             insp_yaw;
+    float             insp_pitch;
     bool              valid;                // false -> drop after parsing
 };
 
@@ -120,6 +137,41 @@ static bool parse_shape(Json* j, HotspotBuild* b) {
     return true;
 }
 
+static bool parse_inspect_target(Json* j, HotspotBuild* b) {
+    if (!json_expect_char(j, '{')) return false;
+    bool has_position = false;
+    if (!json_try_char(j, '}')) {
+        do {
+            char key[64];
+            if (!json_parse_string(j, key, sizeof(key))) return false;
+            if (!json_expect_char(j, ':')) return false;
+            if (strcmp(key, "position") == 0) {
+                if (!json_expect_char(j, '[')) return false;
+                if (!json_parse_float(j, &b->insp_position[0])) return false;
+                if (!json_expect_char(j, ',')) return false;
+                if (!json_parse_float(j, &b->insp_position[1])) return false;
+                if (!json_expect_char(j, ',')) return false;
+                if (!json_parse_float(j, &b->insp_position[2])) return false;
+                if (!json_expect_char(j, ']')) return false;
+                has_position = true;
+            } else if (strcmp(key, "yaw") == 0) {
+                if (!json_parse_float(j, &b->insp_yaw)) return false;
+            } else if (strcmp(key, "pitch") == 0) {
+                if (!json_parse_float(j, &b->insp_pitch)) return false;
+            } else {
+                json_skip_value(j);
+            }
+            if (!j->ok) return false;
+        } while (json_try_char(j, ','));
+        if (!json_expect_char(j, '}')) return false;
+    }
+    if (!has_position) {
+        SDL_Log("Hotspot: inspect target missing 'position'");
+        b->valid = false;
+    }
+    return true;
+}
+
 static bool parse_action(Json* j, HotspotBuild* b) {
     if (!json_expect_char(j, '{')) return false;
     bool has_type = false;
@@ -135,14 +187,28 @@ static bool parse_action(Json* j, HotspotBuild* b) {
                 if (strcmp(val, "warp") == 0) {
                     b->action_type = HOTSPOT_ACTION_WARP;
                     has_type = true;
+                } else if (strcmp(val, "inspect") == 0) {
+                    b->action_type = HOTSPOT_ACTION_INSPECT;
+                    has_type = true;
                 } else {
                     SDL_Log("Hotspot: unknown action.type \"%s\", dropping hotspot", val);
                     b->valid = false;
                     has_type = true;
                 }
             } else if (strcmp(key, "target") == 0) {
-                if (!json_parse_string(j, b->action_target, sizeof(b->action_target))) return false;
-                has_target = true;
+                // Dispatch on next non-ws char: string -> warp target,
+                // object -> inspect target.
+                if (json_peek_char(j, '"')) {
+                    if (!json_parse_string(j, b->warp_target, sizeof(b->warp_target))) return false;
+                    has_target = true;
+                } else if (json_peek_char(j, '{')) {
+                    if (!parse_inspect_target(j, b)) return false;
+                    has_target = true;
+                } else {
+                    SDL_Log("Hotspot: action.target must be string or object");
+                    b->valid = false;
+                    json_skip_value(j);
+                }
             } else {
                 json_skip_value(j);
             }
@@ -151,9 +217,7 @@ static bool parse_action(Json* j, HotspotBuild* b) {
         if (!json_expect_char(j, '}')) return false;
     }
     if (!has_type) { SDL_Log("Hotspot: action missing 'type'"); b->valid = false; }
-    if (b->action_type == HOTSPOT_ACTION_WARP && !has_target) {
-        SDL_Log("Hotspot: warp action missing 'target'"); b->valid = false;
-    }
+    if (!has_target) { SDL_Log("Hotspot: action missing 'target'"); b->valid = false; }
     return true;
 }
 
@@ -358,15 +422,15 @@ static void load_one_view(RefViewSet* set, RefView* v) {
     for (uint32_t i = 0; i < bcount; i++) {
         HotspotBuild* b = &builds[i];
         if (!b->valid) { build_free(b); continue; }
+
         if (b->action_type == HOTSPOT_ACTION_WARP) {
-            int32_t target = resolve_target(set, b->action_target);
+            int32_t target = resolve_target(set, b->warp_target);
             if (target < 0) {
                 SDL_Log("Hotspot [%s]: warp target \"%s\" not found, dropping hotspot",
-                        sidecar, b->action_target);
+                        sidecar, b->warp_target);
                 build_free(b);
                 continue;
             }
-            // Move polygon ownership into final.
             Hotspot* h = &finals[fcount++];
             h->type = b->type;
             h->polygon.points = b->points;
@@ -374,6 +438,19 @@ static void load_one_view(RefViewSet* set, RefView* v) {
             h->action.type = HOTSPOT_ACTION_WARP;
             h->action.warp.target_view = target;
             // Detach from build so build_free won't double-free.
+            b->points = NULL;
+            b->point_count = b->point_cap = 0;
+        } else if (b->action_type == HOTSPOT_ACTION_INSPECT) {
+            Hotspot* h = &finals[fcount++];
+            h->type = b->type;
+            h->polygon.points = b->points;
+            h->polygon.count  = b->point_count;
+            h->action.type = HOTSPOT_ACTION_INSPECT;
+            h->action.inspect.position[0] = b->insp_position[0];
+            h->action.inspect.position[1] = b->insp_position[1];
+            h->action.inspect.position[2] = b->insp_position[2];
+            h->action.inspect.yaw   = b->insp_yaw;
+            h->action.inspect.pitch = b->insp_pitch;
             b->points = NULL;
             b->point_count = b->point_cap = 0;
         } else {
