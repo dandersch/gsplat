@@ -476,7 +476,68 @@ int main(int argc, char* argv[]) {
         if (scene_loaded) {
             ImGui::Text("Visible: %u / %u", scene.visible_count, scene.gaussian_count);
         }
-        ImGui::Text("Camera: %.1f, %.1f, %.1f", cam.position[0], cam.position[1], cam.position[2]);
+        ImGui::Text("Camera: %.1f, %.1f, %.1f  yaw %.3f  pitch %.3f",
+                    cam.position[0], cam.position[1], cam.position[2],
+                    cam.yaw, cam.pitch);
+
+        // Cursor UV on the active overlay panorama (matches .hotspots shape.points).
+        // Only meaningful while the overlay is visible (same gate as overlay alpha).
+        if (refviews_loaded && refviews.current_node >= 0) {
+            RefView* cv = &refviews.views[refviews.current_node];
+            float dx0 = cam.position[0] - cv->position[0];
+            float dy0 = cam.position[1] - cv->position[1];
+            float dz0 = cam.position[2] - cv->position[2];
+            float d2  = dx0*dx0 + dy0*dy0 + dz0*dz0;
+            if (d2 < 0.01f) {
+                // In FPS mode the cursor is captured -> use the crosshair (screen
+                // center). In cursor mode use the actual mouse position.
+                float mx, my;
+                if (cam.camera_mode) {
+                    mx = (float)win_w * 0.5f;
+                    my = (float)win_h * 0.5f;
+                } else {
+                    ImVec2 mp = ImGui::GetMousePos();
+                    mx = mp.x;
+                    my = mp.y;
+                }
+                // Pixel -> Vulkan NDC (matches overlay.vert.glsl: top y=-1).
+                float ndc_x = 2.0f * mx / (float)win_w - 1.0f;
+                float ndc_y = 2.0f * my / (float)win_h - 1.0f;
+
+                float cam_basis[16];
+                float cam_tan[2];
+                camera_get_overlay_ray_basis(&cam, (float)win_w / (float)win_h,
+                                             cam_basis, cam_tan);
+
+                // NDC -> camera-space ray (matches overlay.frag.glsl).
+                float cdx = ndc_x * cam_tan[0];
+                float cdy = -ndc_y * cam_tan[1];
+                float cdz = 1.0f;
+                float clen = sqrtf(cdx*cdx + cdy*cdy + cdz*cdz);
+                cdx /= clen; cdy /= clen; cdz /= clen;
+
+                // Camera-space -> world-space (mat3(cam_basis) * cdir, column-major).
+                float wx = cam_basis[0]*cdx + cam_basis[4]*cdy + cam_basis[8] *cdz;
+                float wy = cam_basis[1]*cdx + cam_basis[5]*cdy + cam_basis[9] *cdz;
+                float wz = cam_basis[2]*cdx + cam_basis[6]*cdy + cam_basis[10]*cdz;
+
+                // World -> ref-camera frame (mat3(ref_rot) * w, column-major).
+                float ref_rot[16];
+                refview_get_rotation_matrix(cv, ref_rot);
+                float rx = ref_rot[0]*wx + ref_rot[4]*wy + ref_rot[8] *wz;
+                float ry = ref_rot[1]*wx + ref_rot[5]*wy + ref_rot[9] *wz;
+                float rz = ref_rot[2]*wx + ref_rot[6]*wy + ref_rot[10]*wz;
+                float rlen = sqrtf(rx*rx + ry*ry + rz*rz);
+                if (rlen > 1e-8f) { rx /= rlen; ry /= rlen; rz /= rlen; }
+
+                const float PI = 3.14159265358979f;
+                float ry_c = ry < -1.0f ? -1.0f : (ry > 1.0f ? 1.0f : ry);
+                float u = atan2f(rx, rz) / (2.0f * PI) + 0.5f;
+                float v = -asinf(ry_c) / PI + 0.5f;
+                ImGui::Text("Cursor UV: %.4f, %.4f", u, v);
+            }
+        }
+
         ImGui::Text("Speed: %.1f", cam.move_speed);
         ImGui::Checkbox("Orthographic", &cam.orthographic);
         if (cam.orthographic) {
