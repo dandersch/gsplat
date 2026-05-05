@@ -48,6 +48,16 @@ struct RefViewSet {
     float    inspect_target_yaw;
     float    inspect_target_pitch;
 
+    // True between an inspect-hotspot click and the user exiting via right-click.
+    // While true, right-click triggers a return-to-source lerp instead of the
+    // usual camera_mode toggle.
+    bool     in_inspect;
+    float    inspect_return_pos[3];   // camera position at the moment of inspect click
+
+    // True for a return-from-inspect lerp: refview_update lerps position only,
+    // leaving yaw/pitch under the user's mouse control.
+    bool     inspect_return;
+
     // neighbor discovery
     float    neighbor_radius;  // only show nodes within this distance of current_node
 

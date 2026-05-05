@@ -164,11 +164,41 @@ int main(int argc, char* argv[]) {
             }
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
                 if (ev.button.button == SDL_BUTTON_RIGHT) {
-                    cam.camera_mode = !cam.camera_mode;
-                    SDL_SetWindowRelativeMouseMode(window, cam.camera_mode);
-                    ImGuiIO& io = ImGui::GetIO();
-                    if (cam.camera_mode) io.ConfigFlags |= ImGuiConfigFlags_NoMouse;
-                    else                 io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
+                    if (refviews_loaded && refviews.in_inspect) {
+                        // Exit inspect: lerp position back to where we clicked
+                        // the hotspot from, drop ortho, re-enter FPS controls.
+                        // Yaw/pitch are not lerped (see refview_update); the
+                        // user can look around during the return.
+                        refviews.inspect_target_pos[0] = refviews.inspect_return_pos[0];
+                        refviews.inspect_target_pos[1] = refviews.inspect_return_pos[1];
+                        refviews.inspect_target_pos[2] = refviews.inspect_return_pos[2];
+                        float dx = refviews.inspect_return_pos[0] - cam.position[0];
+                        float dy = refviews.inspect_return_pos[1] - cam.position[1];
+                        float dz = refviews.inspect_return_pos[2] - cam.position[2];
+                        float dist = sqrtf(dx*dx + dy*dy + dz*dz);
+                        refviews.selected = -1;
+                        refviews.inspect_mode = true;
+                        refviews.inspect_return = true;
+                        refviews.lerping = true;
+                        refviews.lerp_t = 0.0f;
+                        refviews.lerp_duration = (dist > 1e-6f) ? dist / refviews.lerp_speed : 0.1f;
+                        refviews.start_pos[0] = cam.position[0];
+                        refviews.start_pos[1] = cam.position[1];
+                        refviews.start_pos[2] = cam.position[2];
+                        refviews.start_yaw = cam.yaw;
+                        refviews.start_pitch = cam.pitch;
+                        refviews.in_inspect = false;
+                        cam.orthographic = false;
+                        cam.camera_mode = true;
+                        SDL_SetWindowRelativeMouseMode(window, true);
+                        ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouse;
+                    } else {
+                        cam.camera_mode = !cam.camera_mode;
+                        SDL_SetWindowRelativeMouseMode(window, cam.camera_mode);
+                        ImGuiIO& io = ImGui::GetIO();
+                        if (cam.camera_mode) io.ConfigFlags |= ImGuiConfigFlags_NoMouse;
+                        else                 io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
+                    }
                 }
                 if (ev.button.button == SDL_BUTTON_LEFT && cam.camera_mode &&
                     refviews_loaded && !refviews.lerping) {
@@ -233,6 +263,7 @@ int main(int argc, char* argv[]) {
                             float dist = sqrtf(dx*dx + dy*dy + dz*dz);
                             refviews.selected = -1;
                             refviews.inspect_mode = true;
+                            refviews.inspect_return = false;
                             refviews.inspect_target_pos[0] = it->position[0];
                             refviews.inspect_target_pos[1] = it->position[1];
                             refviews.inspect_target_pos[2] = it->position[2];
@@ -246,8 +277,18 @@ int main(int argc, char* argv[]) {
                             refviews.start_pos[2] = cam.position[2];
                             refviews.start_yaw = cam.yaw;
                             refviews.start_pitch = cam.pitch;
+                            // Remember where to lerp back to on right-click exit.
+                            refviews.inspect_return_pos[0] = cam.position[0];
+                            refviews.inspect_return_pos[1] = cam.position[1];
+                            refviews.inspect_return_pos[2] = cam.position[2];
+                            refviews.in_inspect = true;
                             // Drive the existing ortho_blend transition.
                             cam.orthographic = true;
+                            // Switch to cursor mode (point & click); right-click
+                            // will exit inspect and restore FPS controls.
+                            cam.camera_mode = false;
+                            SDL_SetWindowRelativeMouseMode(window, false);
+                            ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
                             break;
                         }
                     }
