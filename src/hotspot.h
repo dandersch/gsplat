@@ -27,6 +27,7 @@ struct HotspotActionInspect {
     float position[3];       // world-space camera position
     float yaw;               // radians
     float pitch;             // radians
+    float ortho_size;        // target Camera::ortho_size for the inspect view
 };
 
 struct HotspotAction {

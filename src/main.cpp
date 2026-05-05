@@ -284,6 +284,7 @@ int main(int argc, char* argv[]) {
                             refviews.in_inspect = true;
                             // Drive the existing ortho_blend transition.
                             cam.orthographic = true;
+                            cam.ortho_size   = it->ortho_size;
                             // Switch to cursor mode (point & click); right-click
                             // will exit inspect and restore FPS controls.
                             cam.camera_mode = false;

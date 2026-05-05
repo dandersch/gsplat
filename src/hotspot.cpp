@@ -24,7 +24,8 @@
 //                   "points": [[u,v], [u,v], ...] },
 //       "action": { "type": "inspect",
 //                   "target": { "position": [x, y, z],
-//                               "yaw": 0.0, "pitch": 0.0 } }   // radians
+//                               "yaw": 0.0, "pitch": 0.0,        // radians
+//                               "ortho_size": 1.0 } }            // optional, default 1.0
 //     }
 //   ]
 // }
@@ -55,6 +56,7 @@ struct HotspotBuild {
     float             insp_position[3];
     float             insp_yaw;
     float             insp_pitch;
+    float             insp_ortho_size;      // defaults to 1.0 if absent
     bool              valid;                // false -> drop after parsing
 };
 
@@ -158,6 +160,8 @@ static bool parse_inspect_target(Json* j, HotspotBuild* b) {
                 if (!json_parse_float(j, &b->insp_yaw)) return false;
             } else if (strcmp(key, "pitch") == 0) {
                 if (!json_parse_float(j, &b->insp_pitch)) return false;
+            } else if (strcmp(key, "ortho_size") == 0) {
+                if (!json_parse_float(j, &b->insp_ortho_size)) return false;
             } else {
                 json_skip_value(j);
             }
@@ -224,6 +228,7 @@ static bool parse_action(Json* j, HotspotBuild* b) {
 static bool parse_hotspot(Json* j, HotspotBuild* b) {
     *b = {};
     b->valid = true;
+    b->insp_ortho_size = 1.0f;
     if (!json_expect_char(j, '{')) return false;
     bool has_shape = false;
     bool has_action = false;
@@ -449,8 +454,9 @@ static void load_one_view(RefViewSet* set, RefView* v) {
             h->action.inspect.position[0] = b->insp_position[0];
             h->action.inspect.position[1] = b->insp_position[1];
             h->action.inspect.position[2] = b->insp_position[2];
-            h->action.inspect.yaw   = b->insp_yaw;
-            h->action.inspect.pitch = b->insp_pitch;
+            h->action.inspect.yaw        = b->insp_yaw;
+            h->action.inspect.pitch      = b->insp_pitch;
+            h->action.inspect.ortho_size = b->insp_ortho_size;
             b->points = NULL;
             b->point_count = b->point_cap = 0;
         } else {
