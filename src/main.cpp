@@ -428,10 +428,22 @@ int main(int argc, char* argv[]) {
         SDL_GetWindowSize(window, &win_w, &win_h);
         float aspect = (float)win_w / (float)win_h;
 
-        // Animate ortho blend toward target
-        {
+        // Animate ortho blend toward target. Skipped while an inspect lerp is
+        // active: refview_update drives ortho_blend from the same eased t as
+        // the position lerp so both finish together (avoids the zoom wobble
+        // that an independent timer caused, especially with ortho_size < 1).
+        //
+        // NOTE: A more involved fix would replace the element-wise lerp in
+        // camera_get_proj_matrix with a parameter-based interpolation (e.g.
+        // gradually collapse the perspective frustum into an ortho box of the
+        // chosen ortho_size, or lerp an effective focal length and rebuild a
+        // single coherent matrix). That would make the apparent scale at the
+        // focused subject strictly monotonic and remove the residual
+        // nonlinearity from blending m[11] (-1 -> 0). Synchronizing the
+        // timers, as we do here, is good enough in practice.
+        if (!(refviews_loaded && refviews.lerping && refviews.inspect_mode)) {
             float target = cam.orthographic ? 1.0f : 0.0f;
-            float blend_speed = 3.0f; // 1/speed seconds for full transition
+            float blend_speed = 1.0f; // 1/speed seconds for full transition
             if (cam.ortho_blend < target) {
                 cam.ortho_blend += blend_speed * dt;
                 if (cam.ortho_blend > target) cam.ortho_blend = target;
@@ -448,6 +460,10 @@ int main(int argc, char* argv[]) {
         cam_uniforms.viewport[0] = (float)win_w;
         cam_uniforms.viewport[1] = (float)win_h;
         cam_uniforms.orthographic = cam.ortho_blend;
+        // Provide pure persp/ortho focal lengths so the splat shader can use
+        // each in its own mix() branch (see comment in camera.h).
+        cam_uniforms.persp_focal = (1.0f / tanf(cam.fov_y * 0.5f)) * (float)win_h * 0.5f;
+        cam_uniforms.ortho_focal = (float)win_h / (2.0f * cam.ortho_size);
 
         // Cull + sort
         if (scene_loaded) {

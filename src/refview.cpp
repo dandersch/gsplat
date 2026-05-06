@@ -349,6 +349,13 @@ bool refview_update(RefViewSet* set, Camera* cam, float dt) {
         cam->position[1] = lerpf(set->start_pos[1], set->inspect_target_pos[1], t);
         cam->position[2] = lerpf(set->start_pos[2], set->inspect_target_pos[2], t);
 
+        // Drive the perspective<->ortho blend off the same eased t as the
+        // position lerp so both finish together. Decoupled timers (the
+        // standalone ramp in main.cpp) caused a visible zoom-in/out wobble
+        // when the inspect target was close enough that the perspective
+        // magnification at that distance exceeded 1/ortho_size.
+        cam->ortho_blend = set->inspect_return ? (1.0f - t) : t;
+
         // On the return leg, leave yaw/pitch alone so the user can look around
         // freely while we slide back to the source position.
         if (!set->inspect_return) {

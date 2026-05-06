@@ -22,7 +22,14 @@ struct CameraUniforms {
     float proj[16];
     float viewport[2];
     float orthographic; // ORTHO: 1.0 = orthographic, 0.0 = perspective
-    float pad[1];
+    // Pure-perspective and pure-orthographic focal lengths (in pixels), used
+    // separately by the splat shader's mix() branches. Sourcing fx/fy from
+    // proj[0][0] would feed the *blended* matrix value into both branches and
+    // produce a visible zoom wobble during the transition (especially with
+    // ortho_size < 1, where the ortho focal exceeds the perspective focal).
+    float persp_focal;
+    float ortho_focal;
+    float pad[3];
 };
 
 void camera_init(Camera* cam);

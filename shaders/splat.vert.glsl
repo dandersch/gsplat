@@ -24,6 +24,12 @@ layout(set = 1, binding = 0) uniform CameraUBO {
     mat4 proj;
     vec2 viewport;
     float orthographic; // ORTHO: 1.0 = orthographic, 0.0 = perspective
+    // Pure persp/ortho focal lengths in pixels. Used per-branch below so the
+    // mid-transition mix() doesn't re-introduce the blended proj[0][0] value
+    // (which caused a visible zoom wobble for inspect targets with
+    // ortho_size < 1).
+    float persp_focal;
+    float ortho_focal;
 };
 
 layout(location = 0) out vec3 frag_color;
@@ -81,17 +87,21 @@ void main() {
     vec4 p_view4 = view * vec4(position, 1.0);
     vec3 t = p_view4.xyz;
 
-    // 6. Compute focal lengths from projection matrix
-    // Note: proj[1][1] is negative for Vulkan Y-flip
-    float fx = proj[0][0] * viewport.x * 0.5;
-    float fy = abs(proj[1][1]) * viewport.y * 0.5;
+    // 6. Focal lengths in pixels. fx == fy under our convention (uniform
+    //    pixel scale on x and y once aspect is accounted for). Using the
+    //    pure persp/ortho focals separately avoids a wobble from the
+    //    blended proj[0][0] feeding both mix() branches.
+    float fx_p = persp_focal;
+    float fy_p = persp_focal;
+    float fx_o = ortho_focal;
+    float fy_o = ortho_focal;
 
     // 7. Jacobian of the screen-space projection at t
     // Lerp between perspective and orthographic Jacobians
-    float J00 = mix(fx / t.z,                     -fx, orthographic);
-    float J11 = mix(-fy / t.z,                     fy, orthographic);
-    float J02 = mix(-fx * t.x / (t.z * t.z),     0.0, orthographic);
-    float J12 = mix( fy * t.y / (t.z * t.z),     0.0, orthographic);
+    float J00 = mix(fx_p / t.z,                     -fx_o, orthographic);
+    float J11 = mix(-fy_p / t.z,                     fy_o, orthographic);
+    float J02 = mix(-fx_p * t.x / (t.z * t.z),     0.0,   orthographic);
+    float J12 = mix( fy_p * t.y / (t.z * t.z),     0.0,   orthographic);
 
     // 8. View rotation (upper-left 3x3 of view matrix)
     mat3 W = mat3(view);
@@ -120,12 +130,12 @@ void main() {
 
     // 12. Compute screen-space center (lerp between perspective and orthographic)
     vec2 persp_center = vec2(
-        fx * t.x / t.z + viewport.x * 0.5,
-        viewport.y * 0.5 - fy * t.y / t.z
+        fx_p * t.x / t.z + viewport.x * 0.5,
+        viewport.y * 0.5 - fy_p * t.y / t.z
     );
     vec2 ortho_center = vec2(
-        -fx * t.x + viewport.x * 0.5,
-        viewport.y * 0.5 + fy * t.y
+        -fx_o * t.x + viewport.x * 0.5,
+        viewport.y * 0.5 + fy_o * t.y
     );
     vec2 center_px = mix(persp_center, ortho_center, orthographic);
 
