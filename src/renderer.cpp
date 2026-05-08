@@ -734,7 +734,187 @@ static void mat4_from_transform(const MeshTransform& t, float* out) {
     out[15] = 1.0f;
 }
 
-void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUniforms* cam, const OverlayParams* overlay, const NodeRenderParams* nodes, float wireframe_occlusion) {
+// Upload the scene's currently-sorted indices into r->index_buffer via the
+// per-frame transfer buffer. cycle=true on the second-or-later upload within
+// a single command buffer so the GPU sees fresh contents.
+static void upload_sorted_indices(Renderer* r, const GaussianScene* scene,
+                                   SDL_GPUCommandBuffer* cmd,
+                                   SDL_GPUTransferBuffer* transfer_buf,
+                                   bool cycle) {
+    if (scene->visible_count == 0 || !transfer_buf) return;
+    void* map = SDL_MapGPUTransferBuffer(r->device, transfer_buf, cycle);
+    if (!map) return;
+    memcpy(map, scene->sorted_indices, scene->visible_count * sizeof(uint32_t));
+    SDL_UnmapGPUTransferBuffer(r->device, transfer_buf);
+
+    SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);
+    SDL_GPUTransferBufferLocation src = {};
+    src.transfer_buffer = transfer_buf;
+    src.offset = 0;
+    SDL_GPUBufferRegion dst = {};
+    dst.buffer = r->index_buffer;
+    dst.offset = 0;
+    dst.size = scene->visible_count * sizeof(uint32_t);
+    SDL_UploadToGPUBuffer(copy, &src, &dst, cycle);
+    SDL_EndGPUCopyPass(copy);
+}
+
+// Draws mesh + splats + (optional) panorama overlay + (optional) wireframe
+// nodes for one camera into the currently-bound render pass. ImGui is NOT
+// drawn here; the caller is responsible for that on the final pass.
+static void draw_world(Renderer* r, SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
+                       const GaussianScene* scene, const CameraUniforms* cam,
+                       const OverlayParams* overlay, const NodeRenderParams* nodes,
+                       float wireframe_occlusion) {
+    // Mesh: writes color, depth, and stencil=1 to mark its silhouette.
+    bool draw_mesh = r->mesh_pipeline && r->mesh_vertex_buffer && r->mesh_index_buffer && r->mesh_submesh_count > 0;
+    if (draw_mesh) {
+        SDL_BindGPUGraphicsPipeline(pass, r->mesh_pipeline);
+        SDL_SetGPUStencilReference(pass, 1);
+
+        SDL_GPUBufferBinding mesh_vb_bind = {};
+        mesh_vb_bind.buffer = r->mesh_vertex_buffer;
+        SDL_BindGPUVertexBuffers(pass, 0, &mesh_vb_bind, 1);
+
+        SDL_GPUBufferBinding mesh_ib_bind = {};
+        mesh_ib_bind.buffer = r->mesh_index_buffer;
+        SDL_BindGPUIndexBuffer(pass, &mesh_ib_bind, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+
+        float view_corrected[16];
+        memcpy(view_corrected, cam->view, sizeof(view_corrected));
+        view_corrected[0]  = -view_corrected[0];
+        view_corrected[4]  = -view_corrected[4];
+        view_corrected[8]  = -view_corrected[8];
+        view_corrected[12] = -view_corrected[12];
+        float vp[16];
+        mat4_mul(cam->proj, view_corrected, vp);
+
+        float model[16];
+        mat4_from_transform(r->mesh_transform, model);
+
+        float mvp[16];
+        mat4_mul(vp, model, mvp);
+
+        for (uint32_t i = 0; i < r->mesh_submesh_count; ++i) {
+            const MeshSubmesh& sm = r->mesh_submeshes[i];
+            if (sm.index_count == 0) continue;
+
+            SDL_GPUTexture* tex = r->mesh_default_texture;
+            float use_texture = 0.0f;
+            if (sm.texture_id >= 0 && (uint32_t)sm.texture_id < r->mesh_texture_count
+                && r->mesh_textures[sm.texture_id]) {
+                tex = r->mesh_textures[sm.texture_id];
+                use_texture = 1.0f;
+            }
+
+            SDL_GPUTextureSamplerBinding mesh_tex_bind = {};
+            mesh_tex_bind.texture = tex;
+            mesh_tex_bind.sampler = r->mesh_sampler;
+            SDL_BindGPUFragmentSamplers(pass, 0, &mesh_tex_bind, 1);
+
+            struct { float mvp[16]; float color[4]; float use_texture; float _pad[3]; } mesh_uniforms;
+            memcpy(mesh_uniforms.mvp, mvp, sizeof(mvp));
+            mesh_uniforms.color[0] = 1.0f;
+            mesh_uniforms.color[1] = 1.0f;
+            mesh_uniforms.color[2] = 1.0f;
+            mesh_uniforms.color[3] = 1.0f;
+            mesh_uniforms.use_texture = use_texture;
+            mesh_uniforms._pad[0] = mesh_uniforms._pad[1] = mesh_uniforms._pad[2] = 0.0f;
+
+            SDL_PushGPUVertexUniformData(cmd, 0, &mesh_uniforms, sizeof(mesh_uniforms));
+            SDL_DrawGPUIndexedPrimitives(pass, sm.index_count, 1, sm.index_offset, 0, 0);
+        }
+    }
+
+    // Splats
+    if (scene->visible_count > 0 && r->splat_pipeline && r->gaussian_buffer && r->index_buffer) {
+        SDL_BindGPUGraphicsPipeline(pass, r->splat_pipeline);
+        SDL_FColor blend_const = { 0, 0, 0, wireframe_occlusion };
+        SDL_SetGPUBlendConstants(pass, blend_const);
+
+        SDL_GPUBuffer* storage_bufs[2] = { r->index_buffer, r->gaussian_buffer };
+        SDL_BindGPUVertexStorageBuffers(pass, 0, storage_bufs, 2);
+
+        SDL_PushGPUVertexUniformData(cmd, 0, cam, sizeof(CameraUniforms));
+
+        SDL_DrawGPUPrimitives(pass, 6, scene->visible_count, 0, 0);
+    }
+
+    // Equirectangular panorama overlay (skipped for the map pass).
+    if (overlay && overlay->texture && overlay->alpha > 0.0f && r->overlay_pipeline) {
+        SDL_BindGPUGraphicsPipeline(pass, r->overlay_pipeline);
+        SDL_SetGPUStencilReference(pass, 1);
+
+        SDL_GPUTextureSamplerBinding sampler_binding = {};
+        sampler_binding.texture = overlay->texture;
+        sampler_binding.sampler = r->overlay_sampler;
+        SDL_BindGPUFragmentSamplers(pass, 0, &sampler_binding, 1);
+
+        struct {
+            float camera_ray_basis[16];
+            float camera_tan_half_fov[2];
+            float camera_pad[2];
+            float ref_rotation[16];
+            float alpha;
+            float alpha_pad[3];
+        } ov_uniforms;
+        memcpy(ov_uniforms.camera_ray_basis, overlay->camera_ray_basis, sizeof(float) * 16);
+        memcpy(ov_uniforms.camera_tan_half_fov, overlay->camera_tan_half_fov, sizeof(float) * 2);
+        ov_uniforms.camera_pad[0] = ov_uniforms.camera_pad[1] = 0.0f;
+        memcpy(ov_uniforms.ref_rotation, overlay->ref_rotation, sizeof(float) * 16);
+        ov_uniforms.alpha = overlay->alpha;
+        ov_uniforms.alpha_pad[0] = ov_uniforms.alpha_pad[1] = ov_uniforms.alpha_pad[2] = 0.0f;
+
+        SDL_PushGPUFragmentUniformData(cmd, 0, &ov_uniforms, sizeof(ov_uniforms));
+        SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+    }
+
+    // Wireframe node cubes
+    if (nodes && nodes->count > 0 && r->wireframe_pipeline) {
+        SDL_BindGPUGraphicsPipeline(pass, r->wireframe_pipeline);
+
+        SDL_GPUBufferBinding vb_bind = {};
+        vb_bind.buffer = r->cube_vertex_buffer;
+        SDL_BindGPUVertexBuffers(pass, 0, &vb_bind, 1);
+
+        SDL_GPUBufferBinding ib_bind = {};
+        ib_bind.buffer = r->cube_index_buffer;
+        SDL_BindGPUIndexBuffer(pass, &ib_bind, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+
+        float view_corrected[16];
+        memcpy(view_corrected, cam->view, sizeof(view_corrected));
+        view_corrected[0]  = -view_corrected[0];
+        view_corrected[4]  = -view_corrected[4];
+        view_corrected[8]  = -view_corrected[8];
+        view_corrected[12] = -view_corrected[12];
+        float vp[16];
+        mat4_mul(cam->proj, view_corrected, vp);
+
+        float scale = nodes->half_size * 2.0f;
+
+        for (uint32_t i = 0; i < nodes->count; i++) {
+            const float* p = &nodes->positions[i * 3];
+
+            float model[16];
+            mat4_translate_scale(p[0], p[1], p[2], scale, model);
+
+            float mvp[16];
+            mat4_mul(vp, model, mvp);
+
+            struct { float mvp[16]; float color[4]; } uniforms;
+            memcpy(uniforms.mvp, mvp, sizeof(mvp));
+            uniforms.color[0] = 0.0f;
+            uniforms.color[1] = 1.0f;
+            uniforms.color[2] = 1.0f;
+            uniforms.color[3] = 1.0f;
+
+            SDL_PushGPUVertexUniformData(cmd, 0, &uniforms, sizeof(uniforms));
+            SDL_DrawGPUIndexedPrimitives(pass, 24, 1, 0, 0, 0);
+        }
+    }
+}
+
+void renderer_draw_frame(Renderer* r, GaussianScene* scene, const CameraUniforms* cam, const OverlayParams* overlay, const NodeRenderParams* nodes, float wireframe_occlusion, const CameraUniforms* map_cam) {
     // Get current frame's transfer buffer and fence
     uint32_t buf_idx = r->current_frame % MAX_FRAMES_IN_FLIGHT;
     SDL_GPUTransferBuffer* transfer_buf = r->transfer_bufs[buf_idx];
@@ -749,28 +929,8 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(r->device);
     if (!cmd) return;
 
-    // Upload sorted indices via transfer buffer
-    if (scene->visible_count > 0 && transfer_buf) {
-        void* map = SDL_MapGPUTransferBuffer(r->device, transfer_buf, false);
-        if (map) {
-            memcpy(map, scene->sorted_indices, scene->visible_count * sizeof(uint32_t));
-            SDL_UnmapGPUTransferBuffer(r->device, transfer_buf);
-
-            SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);
-
-            SDL_GPUTransferBufferLocation src = {};
-            src.transfer_buffer = transfer_buf;
-            src.offset = 0;
-
-            SDL_GPUBufferRegion dst = {};
-            dst.buffer = r->index_buffer;
-            dst.offset = 0;
-            dst.size = scene->visible_count * sizeof(uint32_t);
-
-            SDL_UploadToGPUBuffer(copy, &src, &dst, false);
-            SDL_EndGPUCopyPass(copy);
-        }
-    }
+    // Upload sorted indices for the FPS pass
+    upload_sorted_indices(r, scene, cmd, transfer_buf, false);
 
     // Prepare ImGui draw data (must be before render pass per backend requirement)
     ImGui_ImplSDLGPU3_PrepareDrawData(ImGui::GetDrawData(), cmd);
@@ -828,180 +988,73 @@ void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUn
         return;
     }
 
-    // Mesh: writes color, depth, and stencil=1 to mark its silhouette.
-    // Splats then blend on top within the silhouette (and elsewhere). The
-    // overlay later stencil-tests against != 1, so it only fills non-mesh
-    // pixels — leaving mesh+splat composite visible inside the silhouette.
-    bool draw_mesh = r->mesh_pipeline && r->mesh_vertex_buffer && r->mesh_index_buffer && r->mesh_submesh_count > 0;
-    if (draw_mesh) {
-        SDL_BindGPUGraphicsPipeline(pass, r->mesh_pipeline);
-        // Stencil reference 1: mesh marks its silhouette so the overlay pass
-        // can avoid drawing on top of it.
-        SDL_SetGPUStencilReference(pass, 1);
+    // Pass 1: FPS view (clears swapchain + depth, draws full world incl. overlay).
+    draw_world(r, cmd, pass, scene, cam, overlay, nodes, wireframe_occlusion);
 
-        SDL_GPUBufferBinding mesh_vb_bind = {};
-        mesh_vb_bind.buffer = r->mesh_vertex_buffer;
-        SDL_BindGPUVertexBuffers(pass, 0, &mesh_vb_bind, 1);
-
-        SDL_GPUBufferBinding mesh_ib_bind = {};
-        mesh_ib_bind.buffer = r->mesh_index_buffer;
-        // TODO: 16-bit indices limit meshes to 65535 vertices — switch to 32-bit for loaded meshes
-        SDL_BindGPUIndexBuffer(pass, &mesh_ib_bind, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-
-        float view_corrected[16];
-        memcpy(view_corrected, cam->view, sizeof(view_corrected));
-        view_corrected[0]  = -view_corrected[0];
-        view_corrected[4]  = -view_corrected[4];
-        view_corrected[8]  = -view_corrected[8];
-        view_corrected[12] = -view_corrected[12];
-        float vp[16];
-        mat4_mul(cam->proj, view_corrected, vp);
-
-        float model[16];
-        mat4_from_transform(r->mesh_transform, model);
-
-        float mvp[16];
-        mat4_mul(vp, model, mvp);
-
-        // Draw each submesh with its own texture binding. The fragment shader
-        // samples from set=2 binding=0; we rebind between submeshes so each
-        // material's diffuse texture is applied to its own faces.
-        for (uint32_t i = 0; i < r->mesh_submesh_count; ++i) {
-            const MeshSubmesh& sm = r->mesh_submeshes[i];
-            if (sm.index_count == 0) continue;
-
-            SDL_GPUTexture* tex = r->mesh_default_texture;
-            float use_texture = 0.0f;
-            if (sm.texture_id >= 0 && (uint32_t)sm.texture_id < r->mesh_texture_count
-                && r->mesh_textures[sm.texture_id]) {
-                tex = r->mesh_textures[sm.texture_id];
-                use_texture = 1.0f;
-            }
-
-            SDL_GPUTextureSamplerBinding mesh_tex_bind = {};
-            mesh_tex_bind.texture = tex;
-            mesh_tex_bind.sampler = r->mesh_sampler;
-            SDL_BindGPUFragmentSamplers(pass, 0, &mesh_tex_bind, 1);
-
-            struct { float mvp[16]; float color[4]; float use_texture; float _pad[3]; } mesh_uniforms;
-            memcpy(mesh_uniforms.mvp, mvp, sizeof(mvp));
-            mesh_uniforms.color[0] = 1.0f;
-            mesh_uniforms.color[1] = 1.0f;
-            mesh_uniforms.color[2] = 1.0f;
-            mesh_uniforms.color[3] = 1.0f;
-            mesh_uniforms.use_texture = use_texture;
-            mesh_uniforms._pad[0] = mesh_uniforms._pad[1] = mesh_uniforms._pad[2] = 0.0f;
-
-            SDL_PushGPUVertexUniformData(cmd, 0, &mesh_uniforms, sizeof(mesh_uniforms));
-            SDL_DrawGPUIndexedPrimitives(pass, sm.index_count, 1, sm.index_offset, 0, 0);
-        }
+    // ImGui goes on the LAST pass. If no map overlay, that's this pass.
+    if (!map_cam) {
+        ImGui_ImplSDLGPU3_RenderDrawData(ImGui::GetDrawData(), cmd, pass);
     }
-
-    // Draw gaussians (alpha accumulation scaled by wireframe_occlusion blend constant)
-    if (scene->visible_count > 0 && r->splat_pipeline && r->gaussian_buffer && r->index_buffer) {
-        SDL_BindGPUGraphicsPipeline(pass, r->splat_pipeline);
-        SDL_FColor blend_const = { 0, 0, 0, wireframe_occlusion };
-        SDL_SetGPUBlendConstants(pass, blend_const);
-
-        SDL_GPUBuffer* storage_bufs[2] = { r->index_buffer, r->gaussian_buffer };
-        SDL_BindGPUVertexStorageBuffers(pass, 0, storage_bufs, 2);
-
-        SDL_PushGPUVertexUniformData(cmd, 0, cam, sizeof(CameraUniforms));
-
-        SDL_DrawGPUPrimitives(pass, 6, scene->visible_count, 0, 0);
-    }
-
-    // Overlay (equirectangular panorama). Stencil-tested: only draws where
-    // stencil != 1, i.e. NOT inside the mesh silhouette. The mesh + splat
-    // composite stays visible inside the silhouette, giving the illusion that
-    // the mesh sits "in" the photo.
-    if (overlay && overlay->texture && overlay->alpha > 0.0f && r->overlay_pipeline) {
-        SDL_BindGPUGraphicsPipeline(pass, r->overlay_pipeline);
-        SDL_SetGPUStencilReference(pass, 1);
-
-        SDL_GPUTextureSamplerBinding sampler_binding = {};
-        sampler_binding.texture = overlay->texture;
-        sampler_binding.sampler = r->overlay_sampler;
-        SDL_BindGPUFragmentSamplers(pass, 0, &sampler_binding, 1);
-
-        struct {
-            float camera_ray_basis[16];
-            float camera_tan_half_fov[2];
-            float camera_pad[2];
-            float ref_rotation[16];
-            float alpha;
-            float alpha_pad[3];
-        } ov_uniforms;
-        memcpy(ov_uniforms.camera_ray_basis, overlay->camera_ray_basis, sizeof(float) * 16);
-        memcpy(ov_uniforms.camera_tan_half_fov, overlay->camera_tan_half_fov, sizeof(float) * 2);
-        ov_uniforms.camera_pad[0] = ov_uniforms.camera_pad[1] = 0.0f;
-        memcpy(ov_uniforms.ref_rotation, overlay->ref_rotation, sizeof(float) * 16);
-        ov_uniforms.alpha = overlay->alpha;
-        ov_uniforms.alpha_pad[0] = ov_uniforms.alpha_pad[1] = ov_uniforms.alpha_pad[2] = 0.0f;
-
-        SDL_PushGPUFragmentUniformData(cmd, 0, &ov_uniforms, sizeof(ov_uniforms));
-        SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
-    }
-
-    // Wireframe node cubes (depth-tested against splats, drawn over overlay)
-    if (nodes && nodes->count > 0 && r->wireframe_pipeline) {
-        SDL_BindGPUGraphicsPipeline(pass, r->wireframe_pipeline);
-
-        SDL_GPUBufferBinding vb_bind = {};
-        vb_bind.buffer = r->cube_vertex_buffer;
-        SDL_BindGPUVertexBuffers(pass, 0, &vb_bind, 1);
-
-        SDL_GPUBufferBinding ib_bind = {};
-        ib_bind.buffer = r->cube_index_buffer;
-        SDL_BindGPUIndexBuffer(pass, &ib_bind, SDL_GPU_INDEXELEMENTSIZE_16BIT);
-
-        // Precompute view-projection.
-        // The camera's view matrix has X-axis flipped (right = forward × up instead of
-        // up × forward). The splat shader compensates via manual projection, but for
-        // standard MVP we need to undo the flip by negating VP column 0.
-        // Correct the view matrix by negating row 0 (the flipped right vector).
-        // Row 0 in column-major is at indices [0], [4], [8], [12].
-        float view_corrected[16];
-        memcpy(view_corrected, cam->view, sizeof(view_corrected));
-        view_corrected[0]  = -view_corrected[0];
-        view_corrected[4]  = -view_corrected[4];
-        view_corrected[8]  = -view_corrected[8];
-        view_corrected[12] = -view_corrected[12];
-        float vp[16];
-        mat4_mul(cam->proj, view_corrected, vp);
-
-        float scale = nodes->half_size * 2.0f; // cube verts are ±0.5, so scale by full size
-
-        for (uint32_t i = 0; i < nodes->count; i++) {
-            const float* p = &nodes->positions[i * 3];
-
-            float model[16];
-            mat4_translate_scale(p[0], p[1], p[2], scale, model);
-
-            float mvp[16];
-            mat4_mul(vp, model, mvp);
-
-            struct { float mvp[16]; float color[4]; } uniforms;
-            memcpy(uniforms.mvp, mvp, sizeof(mvp));
-            uniforms.color[0] = 0.0f;
-            uniforms.color[1] = 1.0f;
-            uniforms.color[2] = 1.0f;
-            uniforms.color[3] = 1.0f;
-
-            SDL_PushGPUVertexUniformData(cmd, 0, &uniforms, sizeof(uniforms));
-            SDL_DrawGPUIndexedPrimitives(pass, 24, 1, 0, 0, 0);
-        }
-    }
-
-    // ImGui
-    ImGui_ImplSDLGPU3_RenderDrawData(ImGui::GetDrawData(), cmd, pass);
-
     SDL_EndGPURenderPass(pass);
+
+    // Pass 2 (optional): top-down map overlay. Loads the FPS color (so untouched
+    // pixels stay), clears depth+stencil so we can re-render the world from above.
+    //
+    // NOTE: this redraws the FPS view in full every frame while the map is up.
+    // A more efficient alternative ("option B") would be to render the FPS view
+    // ONCE into an offscreen color texture the moment the map is toggled on,
+    // then each subsequent frame just blit that texture into the swapchain
+    // before the map pass. Cull/sort/mesh/overlay would all be skipped while
+    // the map is active. Cost: one extra owned texture (resized with the
+    // window) plus a one-shot capture flag and a swapchain blit. Worth doing
+    // if the FPS pass becomes the bottleneck while the map is up.
+    if (map_cam) {
+        // Re-cull + re-sort splats from the map camera. mutates `scene`.
+        cull_gaussians(scene, map_cam->view, map_cam->proj, map_cam->orthographic);
+        if (scene->visible_count > 0) {
+            SortContext sort_ctx = {};
+            sort_ctx.depths = scene->visible_depths;
+            sort_ctx.input_indices = scene->visible_indices;
+            sort_ctx.count = scene->visible_count;
+            sort_ctx.sorted_indices = scene->sorted_indices;
+            sort_ctx.scratch_indices = scene->scratch_indices;
+            sort_ctx.scratch_keys = scene->scratch_keys;
+            sort_ctx.scratch_keys2 = scene->scratch_keys2;
+            sort_gaussians(&sort_ctx);
+        }
+        // Second upload to r->index_buffer; cycle=true to safely reuse the
+        // transfer buffer / index buffer within the same command buffer.
+        upload_sorted_indices(r, scene, cmd, transfer_buf, true);
+
+        SDL_GPUColorTargetInfo map_color_target = {};
+        map_color_target.texture = swapchain_tex;
+        map_color_target.load_op = SDL_GPU_LOADOP_LOAD;     // preserve FPS pixels
+        map_color_target.store_op = SDL_GPU_STOREOP_STORE;
+
+        SDL_GPUDepthStencilTargetInfo map_depth_target = {};
+        map_depth_target.texture = r->depth_texture;
+        map_depth_target.load_op = SDL_GPU_LOADOP_CLEAR;
+        map_depth_target.store_op = SDL_GPU_STOREOP_DONT_CARE;
+        map_depth_target.stencil_load_op = SDL_GPU_LOADOP_CLEAR;
+        map_depth_target.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+        map_depth_target.clear_depth = 1.0f;
+        map_depth_target.clear_stencil = 0;
+        map_depth_target.cycle = true;
+
+        SDL_GPURenderPass* map_pass = SDL_BeginGPURenderPass(cmd, &map_color_target, 1, &map_depth_target);
+        if (map_pass) {
+            // No panorama overlay in map view; mesh + splats + wireframe only.
+            draw_world(r, cmd, map_pass, scene, map_cam, NULL, nodes, wireframe_occlusion);
+            ImGui_ImplSDLGPU3_RenderDrawData(ImGui::GetDrawData(), cmd, map_pass);
+            SDL_EndGPURenderPass(map_pass);
+        }
+    }
 
     // Submit and acquire fence for this frame
     r->frame_fences[buf_idx] = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
     r->current_frame++;
 }
+
 
 void renderer_destroy(Renderer* r) {
     // Wait for all in-flight frames to complete

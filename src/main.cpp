@@ -130,15 +130,22 @@ int main(int argc, char* argv[]) {
     uint32_t neighbor_indices[64];
     uint32_t neighbor_count = 0;
 
-    // TODO: this temporary state mutates the FPS camera in place to show a
-    // top-down map. It will be removed once the map is rendered as an overlay
-    // (separate camera + extra render pass) without disturbing `cam`.
-    bool  map_view_active = false;
-    float map_saved_position[3] = {0, 0, 0};
-    float map_saved_yaw = 0.0f;
-    float map_saved_pitch = 0.0f;
-    float map_saved_ortho_size = 0.0f;
-    bool  map_saved_orthographic = false;
+    // Top-down map overlay: separate camera, never mutates the FPS `cam`.
+    // Right-click toggles `map_view_active`; while active a second render
+    // pass in renderer_draw_frame draws mesh+splats+wireframe from this
+    // camera on top of the FPS frame (transparent background = FPS shows
+    // through where the map didn't draw).
+    bool   map_view_active = false;
+    Camera map_cam;
+    camera_init(&map_cam);
+    map_cam.position[0]  = 1.1f;
+    map_cam.position[1]  = -1.0f;
+    map_cam.position[2]  = 0.6f;
+    map_cam.yaw          = -6.3f;
+    map_cam.pitch        = 1.56f;
+    map_cam.orthographic = true;
+    map_cam.ortho_blend  = 1.0f;
+    map_cam.ortho_size   = 5.0f;
 
     while (running) {
         uint64_t now = SDL_GetPerformanceCounter();
@@ -209,36 +216,9 @@ int main(int argc, char* argv[]) {
                         if (cam.camera_mode) io.ConfigFlags |= ImGuiConfigFlags_NoMouse;
                         else                 io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
 
-                        // TODO: stop mutating `cam` here once the map is
-                        // rendered as an overlay with its own camera.
-                        if (!map_view_active) {
-                            // Save current FPS view, swap to top-down map view.
-                            map_saved_position[0]   = cam.position[0];
-                            map_saved_position[1]   = cam.position[1];
-                            map_saved_position[2]   = cam.position[2];
-                            map_saved_yaw           = cam.yaw;
-                            map_saved_pitch         = cam.pitch;
-                            map_saved_ortho_size    = cam.ortho_size;
-                            map_saved_orthographic  = cam.orthographic;
-                            cam.position[0]   = 1.1f;
-                            cam.position[1]   = -1.0f;
-                            cam.position[2]   = 0.6f;
-                            cam.yaw           = -6.3f;
-                            cam.pitch         = 1.56f;
-                            cam.orthographic  = true;
-                            cam.ortho_size    = 5.0f;
-                            map_view_active   = true;
-                        } else {
-                            // Restore previous FPS view.
-                            cam.position[0]  = map_saved_position[0];
-                            cam.position[1]  = map_saved_position[1];
-                            cam.position[2]  = map_saved_position[2];
-                            cam.yaw          = map_saved_yaw;
-                            cam.pitch        = map_saved_pitch;
-                            cam.orthographic = map_saved_orthographic;
-                            cam.ortho_size   = map_saved_ortho_size;
-                            map_view_active  = false;
-                        }
+                        // Toggle the top-down map overlay on top of the
+                        // existing camera-mode toggle.
+                        map_view_active = !map_view_active;
                     }
                 }
                 if (ev.button.button == SDL_BUTTON_LEFT && cam.camera_mode &&
@@ -456,9 +436,7 @@ int main(int argc, char* argv[]) {
         bool camera_locked = refview_update(&refviews, &cam, dt);
 
         // Update camera (allow mouse look during lerp, but block WASD movement)
-        // TODO: drop the map_view_active branch once the map is rendered as
-        // an overlay (the FPS camera will no longer be hijacked).
-        if (camera_locked || map_view_active) {
+        if (camera_locked) {
             camera_update(&cam, keys, mouse_dx, mouse_dy, 0);
         } else if (cam.camera_mode || !ImGui::GetIO().WantCaptureKeyboard) {
             camera_update(&cam, keys, mouse_dx, mouse_dy, dt);
@@ -906,8 +884,23 @@ int main(int argc, char* argv[]) {
             node_ptr = &node_params;
         }
 
+        // Build map-camera uniforms when the top-down overlay is active.
+        CameraUniforms  map_uniforms = {};
+        CameraUniforms* map_uniforms_ptr = NULL;
+        if (map_view_active) {
+            camera_get_view_matrix(&map_cam, map_uniforms.view);
+            camera_get_proj_matrix(&map_cam, aspect, map_uniforms.proj);
+            map_uniforms.viewport[0]   = (float)win_w;
+            map_uniforms.viewport[1]   = (float)win_h;
+            map_uniforms.orthographic  = map_cam.ortho_blend;
+            map_uniforms.persp_focal   = (1.0f / tanf(map_cam.fov_y * 0.5f)) * (float)win_h * 0.5f;
+            map_uniforms.ortho_focal   = (float)win_h / (2.0f * map_cam.ortho_size);
+            map_uniforms_ptr = &map_uniforms;
+        }
+
         // Render
-        renderer_draw_frame(&renderer, &scene, &cam_uniforms, overlay_ptr, node_ptr);
+        renderer_draw_frame(&renderer, &scene, &cam_uniforms, overlay_ptr, node_ptr,
+                            1.0f /*wireframe_occlusion*/, map_uniforms_ptr);
         frame_num++;
     }
 

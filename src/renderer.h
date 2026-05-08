@@ -61,5 +61,9 @@ struct Renderer {
 bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window);
 void renderer_upload_gaussians(Renderer* r, const GaussianScene* scene);
 bool renderer_upload_mesh(Renderer* r, const Mesh* mesh);
-void renderer_draw_frame(Renderer* r, const GaussianScene* scene, const CameraUniforms* cam, const OverlayParams* overlay, const NodeRenderParams* nodes, float wireframe_occlusion = 1.0f);
+// map_cam: if non-NULL, a second render pass is appended that draws mesh,
+// splats, and wireframe nodes from this camera on top of the FPS frame
+// (load_op=LOAD on color, clear depth). Used for the top-down map overlay.
+// scene must be non-const because this path runs a second cull+sort.
+void renderer_draw_frame(Renderer* r, GaussianScene* scene, const CameraUniforms* cam, const OverlayParams* overlay, const NodeRenderParams* nodes, float wireframe_occlusion = 1.0f, const CameraUniforms* map_cam = NULL);
 void renderer_destroy(Renderer* r);
