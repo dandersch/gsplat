@@ -199,6 +199,80 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
         return false;
     }
 
+    // --- Darken pipeline ---
+    // Fullscreen translucent black quad used to dim the FPS view behind the
+    // top-down map overlay. Reuses overlay.vert (fullscreen triangle).
+    size_t dk_frag_size;
+    uint8_t* dk_vert_code = load_file("shaders/overlay.vert.spv", &ov_vert_size);
+    uint8_t* dk_frag_code = load_file("shaders/darken.frag.spv", &dk_frag_size);
+    if (!dk_vert_code || !dk_frag_code) {
+        fprintf(stderr, "Failed to load darken shaders\n");
+        free(dk_vert_code); free(dk_frag_code);
+        return false;
+    }
+
+    SDL_GPUShaderCreateInfo dk_vert_info = {};
+    dk_vert_info.code = dk_vert_code;
+    dk_vert_info.code_size = ov_vert_size;
+    dk_vert_info.entrypoint = "main";
+    dk_vert_info.format = SDL_GPU_SHADERFORMAT_SPIRV;
+    dk_vert_info.stage = SDL_GPU_SHADERSTAGE_VERTEX;
+
+    SDL_GPUShader* dk_vert = SDL_CreateGPUShader(device, &dk_vert_info);
+    free(dk_vert_code);
+
+    SDL_GPUShaderCreateInfo dk_frag_info = {};
+    dk_frag_info.code = dk_frag_code;
+    dk_frag_info.code_size = dk_frag_size;
+    dk_frag_info.entrypoint = "main";
+    dk_frag_info.format = SDL_GPU_SHADERFORMAT_SPIRV;
+    dk_frag_info.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+
+    SDL_GPUShader* dk_frag = SDL_CreateGPUShader(device, &dk_frag_info);
+    free(dk_frag_code);
+
+    if (!dk_vert || !dk_frag) {
+        fprintf(stderr, "FAIL darken shaders: %s\n", SDL_GetError());
+        if (dk_vert) SDL_ReleaseGPUShader(device, dk_vert);
+        if (dk_frag) SDL_ReleaseGPUShader(device, dk_frag);
+        return false;
+    }
+
+    // Same premultiplied-alpha blend as the panorama overlay so the dark
+    // fragment darkens the existing FPS pixels rather than replacing them.
+    SDL_GPUColorTargetDescription dk_color_target = {};
+    dk_color_target.format = r->swapchain_format;
+    dk_color_target.blend_state.enable_blend = true;
+    dk_color_target.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+    dk_color_target.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    dk_color_target.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
+    dk_color_target.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+    dk_color_target.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    dk_color_target.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+    dk_color_target.blend_state.color_write_mask = SDL_GPU_COLORCOMPONENT_R | SDL_GPU_COLORCOMPONENT_G | SDL_GPU_COLORCOMPONENT_B;
+
+    SDL_GPUGraphicsPipelineCreateInfo dk_pipeline_info = {};
+    dk_pipeline_info.vertex_shader = dk_vert;
+    dk_pipeline_info.fragment_shader = dk_frag;
+    dk_pipeline_info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    dk_pipeline_info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+    dk_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+    // No depth/stencil testing: we just want to darken the entire framebuffer
+    // before the map's mesh+splats are drawn on top.
+    dk_pipeline_info.target_info.num_color_targets = 1;
+    dk_pipeline_info.target_info.color_target_descriptions = &dk_color_target;
+    dk_pipeline_info.target_info.has_depth_stencil_target = true;
+    dk_pipeline_info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT;
+
+    r->darken_pipeline = SDL_CreateGPUGraphicsPipeline(device, &dk_pipeline_info);
+    SDL_ReleaseGPUShader(device, dk_vert);
+    SDL_ReleaseGPUShader(device, dk_frag);
+
+    if (!r->darken_pipeline) {
+        fprintf(stderr, "FAIL darken pipeline: %s\n", SDL_GetError());
+        return false;
+    }
+
     // Overlay sampler (linear filtering for smooth panorama sampling)
     SDL_GPUSamplerCreateInfo sampler_info = {};
     sampler_info.min_filter = SDL_GPU_FILTER_LINEAR;
@@ -1043,6 +1117,12 @@ void renderer_draw_frame(Renderer* r, GaussianScene* scene, const CameraUniforms
 
         SDL_GPURenderPass* map_pass = SDL_BeginGPURenderPass(cmd, &map_color_target, 1, &map_depth_target);
         if (map_pass) {
+            // Dim the loaded FPS view first so the map content drawn next is
+            // easier to read against the bright underlying frame.
+            if (r->darken_pipeline) {
+                SDL_BindGPUGraphicsPipeline(map_pass, r->darken_pipeline);
+                SDL_DrawGPUPrimitives(map_pass, 3, 1, 0, 0); // fullscreen triangle
+            }
             // No panorama overlay in map view; mesh + splats + wireframe only.
             draw_world(r, cmd, map_pass, scene, map_cam, NULL, nodes, wireframe_occlusion);
             ImGui_ImplSDLGPU3_RenderDrawData(ImGui::GetDrawData(), cmd, map_pass);
@@ -1067,6 +1147,7 @@ void renderer_destroy(Renderer* r) {
     
     if (r->splat_pipeline) SDL_ReleaseGPUGraphicsPipeline(r->device, r->splat_pipeline);
     if (r->overlay_pipeline) SDL_ReleaseGPUGraphicsPipeline(r->device, r->overlay_pipeline);
+    if (r->darken_pipeline) SDL_ReleaseGPUGraphicsPipeline(r->device, r->darken_pipeline);
     if (r->wireframe_pipeline) SDL_ReleaseGPUGraphicsPipeline(r->device, r->wireframe_pipeline);
     if (r->mesh_pipeline) SDL_ReleaseGPUGraphicsPipeline(r->device, r->mesh_pipeline);
     if (r->overlay_sampler) SDL_ReleaseGPUSampler(r->device, r->overlay_sampler);

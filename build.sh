@@ -14,6 +14,7 @@ glslc -fshader-stage=vertex shaders/splat.vert.glsl -o shaders/splat.vert.spv
 glslc -fshader-stage=fragment shaders/splat.frag.glsl -o shaders/splat.frag.spv
 glslc -fshader-stage=vertex shaders/overlay.vert.glsl -o shaders/overlay.vert.spv
 glslc -fshader-stage=fragment shaders/overlay.frag.glsl -o shaders/overlay.frag.spv
+glslc -fshader-stage=fragment shaders/darken.frag.glsl -o shaders/darken.frag.spv
 glslc -fshader-stage=vertex shaders/wireframe.vert.glsl -o shaders/wireframe.vert.spv
 glslc -fshader-stage=fragment shaders/wireframe.frag.glsl -o shaders/wireframe.frag.spv
 glslc -fshader-stage=vertex shaders/mesh.vert.glsl -o shaders/mesh.vert.spv

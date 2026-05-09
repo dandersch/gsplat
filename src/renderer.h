@@ -32,6 +32,7 @@ struct Renderer {
     SDL_Window*             window;
     SDL_GPUGraphicsPipeline* splat_pipeline;
     SDL_GPUGraphicsPipeline* overlay_pipeline;
+    SDL_GPUGraphicsPipeline* darken_pipeline;     // fullscreen dim of FPS view behind map overlay
     SDL_GPUGraphicsPipeline* wireframe_pipeline;
     SDL_GPUGraphicsPipeline* mesh_pipeline;
     SDL_GPUSampler*         overlay_sampler;
