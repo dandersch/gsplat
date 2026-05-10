@@ -14,6 +14,7 @@
 #include "json_mini.cpp"
 #include "hotspot.cpp"
 #include "refview.cpp"
+#include "audio.cpp"
 
 int main(int argc, char* argv[]) {
     const char* ply_path = NULL;
@@ -29,10 +30,16 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    if (!SDL_Init(SDL_INIT_VIDEO)) {
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO)) {
         fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         return 1;
     }
+
+    // Audio is non-fatal: if init fails (no device, etc.) sfx_play becomes a
+    // no-op via the g_audio_ready flag and the rest of the app keeps running.
+    audio_init();
+    Sfx sfx_transition = {};
+    sfx_load(&sfx_transition, "res/transition.wav");
 
     SDL_GPUDevice* device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, false, NULL);
     if (!device) {
@@ -259,6 +266,7 @@ int main(int argc, char* argv[]) {
                     if (hotspot_idx >= 0) {
                         const Hotspot* h = &refviews.views[hotspot_view].hotspots[hotspot_idx];
                         if (h->action.type == HOTSPOT_ACTION_WARP) {
+                            sfx_play(&sfx_transition, 1.2f);
                             int32_t warp_target = h->action.warp.target_view;
                             RefView* tv = &refviews.views[warp_target];
                             float dx = tv->position[0] - cam.position[0];
@@ -277,6 +285,7 @@ int main(int argc, char* argv[]) {
                             refviews.start_pitch = cam.pitch;
                             break;
                         } else if (h->action.type == HOTSPOT_ACTION_INSPECT) {
+                            sfx_play(&sfx_transition, 1.2f);
                             const HotspotActionInspect* it = &h->action.inspect;
                             float dx = it->position[0] - cam.position[0];
                             float dy = it->position[1] - cam.position[1];
@@ -346,6 +355,7 @@ int main(int argc, char* argv[]) {
                     }
 
                     if (best_hit >= 0) {
+                        sfx_play(&sfx_transition, 1.2f);
                         uint32_t view_idx = neighbor_indices[best_hit];
                         RefView* tv = &refviews.views[view_idx];
                         float dx = tv->position[0] - cam.position[0];
@@ -921,6 +931,10 @@ int main(int argc, char* argv[]) {
     SDL_ReleaseWindowFromGPUDevice(device, window);
     SDL_DestroyWindow(window);
     SDL_DestroyGPUDevice(device);
+
+    sfx_free(&sfx_transition);
+    audio_shutdown();
+
     SDL_Quit();
 
     return 0;
