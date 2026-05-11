@@ -227,6 +227,7 @@ bool renderer_init(Renderer* r, SDL_GPUDevice* device, SDL_Window* window) {
     dk_frag_info.entrypoint = "main";
     dk_frag_info.format = SDL_GPU_SHADERFORMAT_SPIRV;
     dk_frag_info.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+    dk_frag_info.num_uniform_buffers = 1; // DarkenUniforms (animated fog time)
 
     SDL_GPUShader* dk_frag = SDL_CreateGPUShader(device, &dk_frag_info);
     free(dk_frag_code);
@@ -1121,6 +1122,10 @@ void renderer_draw_frame(Renderer* r, GaussianScene* scene, const CameraUniforms
             // easier to read against the bright underlying frame.
             if (r->darken_pipeline) {
                 SDL_BindGPUGraphicsPipeline(map_pass, r->darken_pipeline);
+                // Animated fog needs a time uniform (seconds since startup).
+                struct DarkenUniforms { float time, pad0, pad1, pad2; };
+                DarkenUniforms du = { (float)SDL_GetTicks() * 0.001f, 0.0f, 0.0f, 0.0f };
+                SDL_PushGPUFragmentUniformData(cmd, 0, &du, sizeof(du));
                 SDL_DrawGPUPrimitives(map_pass, 3, 1, 0, 0); // fullscreen triangle
             }
             // No panorama overlay in map view; mesh + splats + wireframe only.
