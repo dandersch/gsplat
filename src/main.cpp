@@ -154,6 +154,9 @@ int main(int argc, char* argv[]) {
     map_cam.ortho_blend  = 1.0f;
     map_cam.ortho_size   = 5.0f;
 
+    // Map overlay interaction: left-drag pans, wheel zooms toward cursor.
+    bool map_dragging = false;
+
     while (running) {
         uint64_t now = SDL_GetPerformanceCounter();
         float dt = (float)(now - last_time) / (float)freq;
@@ -227,6 +230,12 @@ int main(int argc, char* argv[]) {
                         // existing camera-mode toggle.
                         map_view_active = !map_view_active;
                     }
+                }
+                if (ev.button.button == SDL_BUTTON_LEFT && map_view_active &&
+                    !ImGui::GetIO().WantCaptureMouse) {
+                    // Begin panning the top-down map.
+                    map_dragging = true;
+                    break;
                 }
                 if (ev.button.button == SDL_BUTTON_LEFT && cam.camera_mode &&
                     refviews_loaded && !refviews.lerping) {
@@ -375,18 +384,93 @@ int main(int argc, char* argv[]) {
                 }
                 break;
             case SDL_EVENT_MOUSE_BUTTON_UP:
+                if (ev.button.button == SDL_BUTTON_LEFT) map_dragging = false;
                 break;
             case SDL_EVENT_MOUSE_MOTION:
                 if (cam.camera_mode) {
                     mouse_dx += ev.motion.xrel;
                     mouse_dy += ev.motion.yrel;
                 }
+                if (map_dragging && map_view_active) {
+                    // Pan along the map camera's own right/up basis (which lies
+                    // in the world XZ plane for a top-down view). We use the
+                    // camera-local axes rather than world XZ so that dragging
+                    // still tracks screen-space movement if the map is rotated
+                    // about the world up axis.
+                    int ww, wh;
+                    SDL_GetWindowSize(window, &ww, &wh);
+                    float fwd[3], right[3], up[3];
+                    float wup[3] = {0.0f, 1.0f, 0.0f};
+                    camera_get_forward(&map_cam, fwd);
+                    right[0] = fwd[1]*wup[2] - fwd[2]*wup[1];
+                    right[1] = fwd[2]*wup[0] - fwd[0]*wup[2];
+                    right[2] = fwd[0]*wup[1] - fwd[1]*wup[0];
+                    float rl = sqrtf(right[0]*right[0] + right[1]*right[1] + right[2]*right[2]);
+                    if (rl > 1e-8f) { right[0]/=rl; right[1]/=rl; right[2]/=rl; }
+                    up[0] = right[1]*fwd[2] - right[2]*fwd[1];
+                    up[1] = right[2]*fwd[0] - right[0]*fwd[2];
+                    up[2] = right[0]*fwd[1] - right[1]*fwd[0];
+
+                    // Note: camera.cpp's `right` = cross(forward, world_up)
+                    // actually points to screen-LEFT (see camera_update's A/D
+                    // strafe direction), so the signs here are flipped from
+                    // what a textbook drag-pan would suggest.
+                    float wpp = (2.0f * map_cam.ortho_size) / (float)wh;
+                    float dr =  ev.motion.xrel * wpp;
+                    float du = -ev.motion.yrel * wpp;
+                    map_cam.position[0] += dr * right[0] + du * up[0];
+                    map_cam.position[1] += dr * right[1] + du * up[1];
+                    map_cam.position[2] += dr * right[2] + du * up[2];
+                }
                 break;
             case SDL_EVENT_MOUSE_WHEEL:
                 if (!ImGui::GetIO().WantCaptureMouse) {
-                    cam.move_speed *= (ev.wheel.y > 0) ? 1.2f : (1.0f / 1.2f);
-                    if (cam.move_speed < 0.1f) cam.move_speed = 0.1f;
-                    if (cam.move_speed > 100.0f) cam.move_speed = 100.0f;
+                    if (map_view_active) {
+                        // Zoom toward the cursor: scale ortho_size, then shift
+                        // map_cam.position so the world point under the cursor
+                        // before the zoom remains under the cursor after.
+                        float factor = (ev.wheel.y > 0) ? (1.0f / 1.2f) : 1.2f;
+                        float new_size = map_cam.ortho_size * factor;
+                        if (new_size < 0.05f) { factor = 0.05f / map_cam.ortho_size; new_size = 0.05f; }
+                        if (new_size > 50.0f) { factor = 50.0f  / map_cam.ortho_size; new_size = 50.0f;  }
+
+                        int ww, wh;
+                        SDL_GetWindowSize(window, &ww, &wh);
+                        float aspect_m = (float)ww / (float)wh;
+                        float half_h = map_cam.ortho_size;
+                        float half_w = half_h * aspect_m;
+
+                        float mx = ev.wheel.mouse_x;
+                        float my = ev.wheel.mouse_y;
+                        float off_r = (2.0f * mx / (float)ww - 1.0f) * half_w;
+                        float off_u = (1.0f - 2.0f * my / (float)wh) * half_h;
+
+                        float fwd[3], right[3], up[3];
+                        float wup[3] = {0.0f, 1.0f, 0.0f};
+                        camera_get_forward(&map_cam, fwd);
+                        right[0] = fwd[1]*wup[2] - fwd[2]*wup[1];
+                        right[1] = fwd[2]*wup[0] - fwd[0]*wup[2];
+                        right[2] = fwd[0]*wup[1] - fwd[1]*wup[0];
+                        float rl = sqrtf(right[0]*right[0] + right[1]*right[1] + right[2]*right[2]);
+                        if (rl > 1e-8f) { right[0]/=rl; right[1]/=rl; right[2]/=rl; }
+                        up[0] = right[1]*fwd[2] - right[2]*fwd[1];
+                        up[1] = right[2]*fwd[0] - right[0]*fwd[2];
+                        up[2] = right[0]*fwd[1] - right[1]*fwd[0];
+
+                        // Sign matches the pan: camera.cpp's right/up basis is
+                        // mirrored relative to standard convention, so the
+                        // shift is negated.
+                        float k = factor - 1.0f;
+                        map_cam.position[0] += k * (off_r * right[0] + off_u * up[0]);
+                        map_cam.position[1] += k * (off_r * right[1] + off_u * up[1]);
+                        map_cam.position[2] += k * (off_r * right[2] + off_u * up[2]);
+
+                        map_cam.ortho_size = new_size;
+                    } else {
+                        cam.move_speed *= (ev.wheel.y > 0) ? 1.2f : (1.0f / 1.2f);
+                        if (cam.move_speed < 0.1f) cam.move_speed = 0.1f;
+                        if (cam.move_speed > 100.0f) cam.move_speed = 100.0f;
+                    }
                 }
                 break;
             }
