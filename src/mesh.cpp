@@ -13,7 +13,10 @@
 #include "stb_image.h"
 #undef STB_IMAGE_IMPLEMENTATION
 
-bool mesh_load_obj(const char* obj_path, Mesh* mesh) {
+#define CGLTF_IMPLEMENTATION
+#include "cgltf.h"
+
+static bool mesh_load_obj(const char* obj_path, Mesh* mesh) {
     memset(mesh, 0, sizeof(*mesh));
 
     // Extract directory from obj_path for MTL/texture lookup
@@ -162,6 +165,67 @@ bool mesh_load_obj(const char* obj_path, Mesh* mesh) {
             mesh->texture_count, mesh->submesh_count);
 
     return true;
+}
+
+static bool mesh_load_gltf(const char* gltf_path, Mesh* mesh) {
+    memset(mesh, 0, sizeof(*mesh));
+
+    cgltf_options options = {};
+    cgltf_data* data = NULL;
+
+    cgltf_result res = cgltf_parse_file(&options, gltf_path, &data);
+    if (res != cgltf_result_success) {
+        fprintf(stderr, "glTF parse failed (%d): %s\n", (int)res, gltf_path);
+        return false;
+    }
+
+    res = cgltf_load_buffers(&options, data, gltf_path);
+    if (res != cgltf_result_success) {
+        fprintf(stderr, "glTF buffer load failed (%d): %s\n", (int)res, gltf_path);
+        cgltf_free(data);
+        return false;
+    }
+
+    res = cgltf_validate(data);
+    if (res != cgltf_result_success) {
+        fprintf(stderr, "glTF validation failed (%d): %s\n", (int)res, gltf_path);
+        cgltf_free(data);
+        return false;
+    }
+
+    fprintf(stderr, "glTF parsing OK (loading not implemented yet): %zu meshes, %zu nodes, %zu materials, %zu images\n",
+            data->meshes_count, data->nodes_count, data->materials_count, data->images_count);
+
+    cgltf_free(data);
+    return false;  // step 2 will actually populate `mesh` and return true
+}
+
+bool mesh_load(const char* path, Mesh* mesh) {
+    memset(mesh, 0, sizeof(*mesh));
+
+    // Find extension (case-insensitive).
+    const char* dot = strrchr(path, '.');
+    if (!dot || !dot[1]) {
+        fprintf(stderr, "Unrecognized mesh file extension: %s\n", path);
+        return false;
+    }
+
+    char ext[16] = {};
+    size_t i = 0;
+    for (const char* p = dot + 1; *p && i < sizeof(ext) - 1; ++p, ++i) {
+        char c = *p;
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        ext[i] = c;
+    }
+
+    if (strcmp(ext, "obj") == 0) {
+        return mesh_load_obj(path, mesh);
+    } else if (strcmp(ext, "glb") == 0 || strcmp(ext, "gltf") == 0) {
+        return mesh_load_gltf(path, mesh);
+    } else {
+        fprintf(stderr, "Unrecognized mesh file extension: %s\n", path);
+        return false;
+    }
 }
 
 void mesh_free(Mesh* mesh) {

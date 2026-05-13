@@ -23,5 +23,5 @@ struct Mesh {
     uint32_t     texture_count;
 };
 
-bool mesh_load_obj(const char* obj_path, Mesh* mesh);
+bool mesh_load(const char* path, Mesh* mesh);  // dispatches by file extension
 void mesh_free(Mesh* mesh);

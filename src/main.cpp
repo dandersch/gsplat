@@ -89,7 +89,7 @@ int main(int argc, char* argv[]) {
     // Mesh
     Mesh mesh = {};
     if (mesh_path) {
-        if (mesh_load_obj(mesh_path, &mesh)) {
+        if (mesh_load(mesh_path, &mesh)) {
             renderer_upload_mesh(&renderer, &mesh);
         }
     }
