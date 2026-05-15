@@ -121,7 +121,6 @@ int main(int argc, char* argv[]) {
     float node_half_size = 0.5f;
     bool show_node_boxes = true;
     bool show_hotspot_debug = false;
-    int frame_num = 0;
 
     // Mesh path animation (walks the mesh from refview node 0..n-1 and loops)
     uint32_t anim_node = 0;
@@ -995,7 +994,6 @@ int main(int argc, char* argv[]) {
         // Render
         renderer_draw_frame(&renderer, &scene, &cam_uniforms, overlay_ptr, node_ptr,
                             1.0f /*wireframe_occlusion*/, map_uniforms_ptr);
-        frame_num++;
     }
 
     SDL_WaitForGPUIdle(device);

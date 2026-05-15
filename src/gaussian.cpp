@@ -212,16 +212,6 @@ bool load_ply(const char* path, GaussianScene* scene) {
     scene->scratch_keys2    = (uint32_t*)malloc(vertex_count * sizeof(uint32_t));
     scene->visible_count    = 0;
 
-    // Print a few samples
-    fprintf(stderr, "Loaded %u gaussians\n", vertex_count);
-    for (uint32_t i = 0; i < 3 && i < vertex_count; i++) {
-        Gaussian* g = &scene->gaussians[i];
-        fprintf(stderr, "  [%u] pos=(%.3f,%.3f,%.3f) scale=(%.4f,%.4f,%.4f) color=(%.2f,%.2f,%.2f) opacity=%.2f\n",
-            i, g->position[0], g->position[1], g->position[2],
-            g->scale[0], g->scale[1], g->scale[2],
-            g->color[0], g->color[1], g->color[2], g->opacity);
-    }
-
     return true;
 }
 
