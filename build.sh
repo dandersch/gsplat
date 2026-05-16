@@ -8,6 +8,8 @@ OUT="gsplat"
 
 IMGUI_DIR="third_party/imgui"
 IMGUI_LIB="third_party/libimgui.a"
+THIRDPARTY_LIB="third_party/libthirdparty.a"
+THIRDPARTY_SRC="third_party/third_party_impl.cpp"
 
 echo "Compiling shaders..."
 glslc -fshader-stage=vertex shaders/splat.vert.glsl -o shaders/splat.vert.spv
@@ -36,7 +38,16 @@ if [ ! -f "$IMGUI_LIB" ]; then
     rm "${IMGUI_OBJS[@]}"
 fi
 
+# Build single-header third_party static lib if missing or out of date
+if [ ! -f "$THIRDPARTY_LIB" ] || [ "$THIRDPARTY_SRC" -nt "$THIRDPARTY_LIB" ]; then
+    echo "Building third_party single-header impls..."
+    obj="third_party/third_party_impl.o"
+    $CXX $CXXFLAGS -Ithird_party -c "$THIRDPARTY_SRC" -o "$obj"
+    ar rcs "$THIRDPARTY_LIB" "$obj"
+    rm "$obj"
+fi
+
 echo "Building $OUT..."
-$CXX $CXXFLAGS -I"$IMGUI_DIR" -I"$IMGUI_DIR/backends" -Ithird_party src/main.cpp -o "$OUT" "$IMGUI_LIB" $LDFLAGS
+$CXX $CXXFLAGS -I"$IMGUI_DIR" -I"$IMGUI_DIR/backends" -Ithird_party src/main.cpp -o "$OUT" "$IMGUI_LIB" "$THIRDPARTY_LIB" $LDFLAGS
 
 echo "Done: ./$OUT"

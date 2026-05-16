@@ -6,14 +6,8 @@
 #include <string>
 #include <map>
 
-#define TINYOBJLOADER_IMPLEMENTATION
 #include "tiny_obj_loader.h"
-
-#define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
-#undef STB_IMAGE_IMPLEMENTATION
-
-#define CGLTF_IMPLEMENTATION
 #include "cgltf.h"
 
 static bool mesh_load_obj(const char* obj_path, Mesh* mesh) {
