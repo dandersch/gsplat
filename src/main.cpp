@@ -16,6 +16,14 @@
 #include "refview.cpp"
 #include "audio.cpp"
 
+// Returns true if file at `path` exists and is readable.
+static bool file_exists(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return false;
+    fclose(f);
+    return true;
+}
+
 int main(int argc, char* argv[]) {
     const char* ply_path = NULL;
     const char* colmap_dir = NULL;
@@ -27,6 +35,25 @@ int main(int argc, char* argv[]) {
             mesh_path = argv[++i];
         } else if (!ply_path) {
             ply_path = argv[i];
+        }
+    }
+
+    // Accept either a colmap base directory (containing sparse/0/) or the
+    // sparse/0 directory directly. If the user passed the base, resolve it
+    // to <base>/sparse/0 so the rest of the code (which derives image_dir
+    // and database.db via ../../) keeps working unchanged.
+    char colmap_dir_buf[512];
+    if (colmap_dir) {
+        char probe[512];
+        snprintf(probe, sizeof(probe), "%s/images.txt", colmap_dir);
+        bool has_model_here = file_exists(probe);
+        if (!has_model_here) {
+            snprintf(probe, sizeof(probe), "%s/images.bin", colmap_dir);
+            has_model_here = file_exists(probe);
+        }
+        if (!has_model_here) {
+            snprintf(colmap_dir_buf, sizeof(colmap_dir_buf), "%s/sparse/0", colmap_dir);
+            colmap_dir = colmap_dir_buf;
         }
     }
 
