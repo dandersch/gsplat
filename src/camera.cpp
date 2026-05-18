@@ -69,8 +69,13 @@ static void normalize3(float* v) {
 void camera_update(Camera* cam, const bool* keys, float dx, float dy, float dt) {
     // keys: 0=W, 1=A, 2=S, 3=D, 4=Space, 5=LCtrl, 6=LShift, 7=E, 8=Q
     if (cam->camera_mode) {
-        cam->yaw   += dx * cam->look_sensitivity;
-        cam->pitch += dy * cam->look_sensitivity;
+        // Tangent-matched sensitivity: a given mouse delta moves the view by
+        // the same on-screen pixel distance at any FOV, so zooming in slows
+        // the apparent motion proportionally. Base FOV is 90deg, and
+        // tan(90/2) = 1, so the scale collapses to tan(fov_y * 0.5).
+        float scale = tanf(cam->fov_y * 0.5f);
+        cam->yaw   += dx * cam->look_sensitivity * scale;
+        cam->pitch += dy * cam->look_sensitivity * scale;
         float limit = 3.14159265358979f * 0.5f - 0.01f;
         if (cam->pitch >  limit) cam->pitch =  limit;
         if (cam->pitch < -limit) cam->pitch = -limit;
