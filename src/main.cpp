@@ -492,6 +492,14 @@ int main(int argc, char* argv[]) {
                         map_cam.position[2] += k * (off_r * right[2] + off_u * up[2]);
 
                         map_cam.ortho_size = new_size;
+                    } else if (cam.camera_mode) {
+                        // FPS camera: wheel zooms by adjusting FOV.
+                        // Wheel up -> FOV down (zoom in), wheel down -> FOV up (zoom out).
+                        cam.fov_y *= (ev.wheel.y > 0) ? (1.0f / 1.1f) : 1.1f;
+                        float min_fov = 10.0f * (3.14159265358979f / 180.0f);
+                        float max_fov = 120.0f * (3.14159265358979f / 180.0f);
+                        if (cam.fov_y < min_fov) cam.fov_y = min_fov;
+                        if (cam.fov_y > max_fov) cam.fov_y = max_fov;
                     } else {
                         cam.move_speed *= (ev.wheel.y > 0) ? 1.2f : (1.0f / 1.2f);
                         if (cam.move_speed < 0.1f) cam.move_speed = 0.1f;
